@@ -1,0 +1,8 @@
+.git
+.gitignore
+data
+bin
+frontend/node_modules
+frontend/dist
+*.db
+README.md

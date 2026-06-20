@@ -1,0 +1,25 @@
+services:
+  mampftracker:
+    build:
+      context: .
+    image: mampftracker:local
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Europe/Berlin
+      OPENFOODFACTS_USER_AGENT: "MampfTracker/0.1 (local development)"
+      # Optionaler Zugriffsschutz:
+      # AUTH_USERNAME: admin
+      # AUTH_PASSWORD: bitte-aendern
+    volumes:
+      - mampftracker-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  mampftracker-data:
