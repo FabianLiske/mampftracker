@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Barcode, BookOpen, ChevronLeft, ChevronRight, CirclePlus, Flame, Leaf,
-  LoaderCircle, Minus, PencilLine, Plus, ScanLine, Settings2, Trash2, X,
+  Activity, Barcode, BookOpen, ChevronLeft, ChevronRight, CirclePlus, Flame, Leaf,
+  LoaderCircle, Minus, PencilLine, Plus, Save, Scale, ScanLine, Settings2, Trash2, X,
 } from 'lucide-react'
 import { api } from './api'
-import type { Entry, Food, Goals, Meal, Totals } from './types'
+import type { DailyStats, Entry, Food, Goals, Meal, Totals } from './types'
 
 const meals: { id: Meal; label: string; icon: string }[] = [
   { id: 'breakfast', label: 'Frühstück', icon: '☀️' },
@@ -76,6 +76,7 @@ export default function App() {
   const [date, setDate] = useState(localDate())
   const [entries, setEntries] = useState<Entry[]>([])
   const [goals, setGoals] = useState<Goals>(emptyGoals)
+  const [dailyStats, setDailyStats] = useState<DailyStats>({ date: localDate(), weight: null, caloriesBurned: null })
   const [loading, setLoading] = useState(true)
   const [addMeal, setAddMeal] = useState<Meal | null>(null)
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null)
@@ -86,9 +87,12 @@ export default function App() {
   const load = async () => {
     setLoading(true)
     try {
-      const [newEntries, newGoals] = await Promise.all([api.entries(date), api.goals()])
+      const [newEntries, newGoals, newDailyStats] = await Promise.all([
+        api.entries(date), api.goals(), api.dailyStats(date),
+      ])
       setEntries(newEntries)
       setGoals(newGoals)
+      setDailyStats(newDailyStats)
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Laden fehlgeschlagen')
@@ -137,6 +141,10 @@ export default function App() {
         </div>
 
         {error && <div className="error-banner">{error}<button onClick={() => setError('')}><X size={17} /></button></div>}
+
+        {dailyStats.date === date && (
+          <DailyStatsCard key={date} stats={dailyStats} onSaved={setDailyStats} />
+        )}
 
         <section className="summary-grid">
           <CalorieCard current={totals.calories} goal={goals.calories} />
@@ -195,6 +203,64 @@ export default function App() {
           onSave={newGoals => { setGoals(newGoals); setSettingsOpen(false) }} />
       )}
     </div>
+  )
+}
+
+function DailyStatsCard({ stats, onSaved }: {
+  stats: DailyStats
+  onSaved: (stats: DailyStats) => void
+}) {
+  const [weight, setWeight] = useState(stats.weight?.toString() ?? '')
+  const [caloriesBurned, setCaloriesBurned] = useState(stats.caloriesBurned?.toString() ?? '')
+  const [busy, setBusy] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState('')
+
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setBusy(true); setSaved(false); setError('')
+    try {
+      const updated = await api.updateDailyStats({
+        date: stats.date,
+        weight: weight === '' ? null : Number(weight),
+        caloriesBurned: caloriesBurned === '' ? null : Number(caloriesBurned),
+      })
+      onSaved(updated)
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 1800)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Tageswerte konnten nicht gespeichert werden')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form className="daily-stats-card" onSubmit={save}>
+      <div className="daily-stats-title">
+        <span>Tageswerte</span>
+        <strong>Körper & Aktivität</strong>
+      </div>
+      <label>
+        <Scale size={19} />
+        <span><small>Körpergewicht</small>
+          <span className="daily-value"><input type="number" min="0.1" max="500" step="0.1"
+            placeholder="–" value={weight} onChange={event => setWeight(event.target.value)} /> kg</span>
+        </span>
+      </label>
+      <label>
+        <Activity size={19} />
+        <span><small>Verbrauch laut Smartwatch</small>
+          <span className="daily-value"><input type="number" min="0" max="20000" step="1"
+            placeholder="–" value={caloriesBurned} onChange={event => setCaloriesBurned(event.target.value)} /> kcal</span>
+        </span>
+      </label>
+      <button className={saved ? 'saved' : ''} disabled={busy}>
+        {busy ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}
+        {saved ? 'Gespeichert' : 'Speichern'}
+      </button>
+      {error && <div className="inline-error daily-stats-error">{error}</div>}
+    </form>
   )
 }
 

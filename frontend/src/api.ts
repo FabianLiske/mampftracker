@@ -1,4 +1,4 @@
-import type { Entry, Food, Goals, Meal } from './types'
+import type { DailyStats, Entry, Food, Goals, Meal } from './types'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -52,5 +52,12 @@ export const api = {
     request<Goals>('/api/goals', {
       method: 'PUT',
       body: JSON.stringify(goals),
+    }),
+  dailyStats: (date: string) =>
+    request<DailyStats>(`/api/daily-stats?date=${encodeURIComponent(date)}`),
+  updateDailyStats: (stats: DailyStats) =>
+    request<DailyStats>('/api/daily-stats', {
+      method: 'PUT',
+      body: JSON.stringify(stats),
     }),
 }

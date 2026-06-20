@@ -43,6 +43,12 @@ export interface Goals {
   fiber: number
 }
 
+export interface DailyStats {
+  date: string
+  weight: number | null
+  caloriesBurned: number | null
+}
+
 export interface Totals extends Goals {
   sugar: number
   saturatedFat: number

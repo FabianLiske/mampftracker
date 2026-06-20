@@ -74,6 +74,12 @@ type goals struct {
 	Fiber    float64 `json:"fiber"`
 }
 
+type dailyStats struct {
+	Date           string   `json:"date"`
+	Weight         *float64 `json:"weight"`
+	CaloriesBurned *float64 `json:"caloriesBurned"`
+}
+
 type offNutriments struct {
 	Energy       float64 `json:"energy_100g"`
 	EnergyKcal   float64 `json:"energy-kcal_100g"`
@@ -130,6 +136,8 @@ func main() {
 	mux.HandleFunc("DELETE /api/entries/{id}", a.deleteEntry)
 	mux.HandleFunc("GET /api/goals", a.getGoals)
 	mux.HandleFunc("PUT /api/goals", a.putGoals)
+	mux.HandleFunc("GET /api/daily-stats", a.getDailyStats)
+	mux.HandleFunc("PUT /api/daily-stats", a.putDailyStats)
 	mux.Handle("/", spaHandler())
 
 	server := &http.Server{
@@ -195,6 +203,12 @@ func migrate(db *sql.DB) error {
 		CREATE TABLE IF NOT EXISTS settings (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS daily_stats (
+			entry_date TEXT PRIMARY KEY,
+			weight REAL,
+			calories_burned REAL,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 		INSERT OR IGNORE INTO settings(key, value)
 		VALUES ('goals', '{"calories":2200,"protein":140,"carbs":250,"fat":70,"fiber":30}');
@@ -716,6 +730,69 @@ func (a *app) putGoals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, g)
+}
+
+func (a *app) getDailyStats(w http.ResponseWriter, r *http.Request) {
+	date := r.URL.Query().Get("date")
+	if !validDate(date) {
+		writeError(w, http.StatusBadRequest, "Datum muss YYYY-MM-DD entsprechen")
+		return
+	}
+	stats := dailyStats{Date: date}
+	err := a.db.QueryRow(`
+		SELECT weight, calories_burned
+		FROM daily_stats WHERE entry_date = ?`, date,
+	).Scan(&stats.Weight, &stats.CaloriesBurned)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "Tageswerte konnten nicht geladen werden")
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (a *app) putDailyStats(w http.ResponseWriter, r *http.Request) {
+	var stats dailyStats
+	if err := decodeJSON(r, &stats); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !validDate(stats.Date) {
+		writeError(w, http.StatusBadRequest, "Datum muss YYYY-MM-DD entsprechen")
+		return
+	}
+	if stats.Weight != nil &&
+		(*stats.Weight <= 0 || *stats.Weight > 500 || math.IsNaN(*stats.Weight) || math.IsInf(*stats.Weight, 0)) {
+		writeError(w, http.StatusBadRequest, "Das Gewicht muss zwischen 0 und 500 kg liegen")
+		return
+	}
+	if stats.CaloriesBurned != nil &&
+		(*stats.CaloriesBurned < 0 || *stats.CaloriesBurned > 20000 ||
+			math.IsNaN(*stats.CaloriesBurned) || math.IsInf(*stats.CaloriesBurned, 0)) {
+		writeError(w, http.StatusBadRequest, "Der Verbrauch muss zwischen 0 und 20.000 kcal liegen")
+		return
+	}
+	if stats.Weight == nil && stats.CaloriesBurned == nil {
+		if _, err := a.db.Exec(`DELETE FROM daily_stats WHERE entry_date = ?`, stats.Date); err != nil {
+			writeError(w, http.StatusInternalServerError, "Tageswerte konnten nicht gelöscht werden")
+			return
+		}
+		writeJSON(w, http.StatusOK, stats)
+		return
+	}
+	_, err := a.db.Exec(`
+		INSERT INTO daily_stats(entry_date, weight, calories_burned, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(entry_date) DO UPDATE SET
+			weight = excluded.weight,
+			calories_burned = excluded.calories_burned,
+			updated_at = CURRENT_TIMESTAMP`,
+		stats.Date, stats.Weight, stats.CaloriesBurned,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Tageswerte konnten nicht gespeichert werden")
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 func spaHandler() http.Handler {

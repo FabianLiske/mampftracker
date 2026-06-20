@@ -41,6 +41,20 @@ main { max-width: 1120px; margin: auto; padding: 32px 24px 80px; }
 .date-title { border: 0; background: transparent; min-width: 170px; cursor: pointer; display: flex; flex-direction: column; align-items: center; }
 .date-title strong { font-family: Georgia, serif; font-size: 25px; }
 .date-title span { color: var(--muted); font-size: 13px; margin-top: 3px; }
+.daily-stats-card { display: grid; grid-template-columns: 1.15fr 1fr 1.25fr auto; align-items: center; gap: 12px; background: var(--paper); border: 1px solid var(--line); border-radius: 17px; padding: 14px 16px; margin-bottom: 14px; box-shadow: 0 8px 30px rgba(49,60,49,.035); }
+.daily-stats-title { display: flex; flex-direction: column; }
+.daily-stats-title > span { color: var(--green); text-transform: uppercase; letter-spacing: 1.3px; font-size: 10px; font-weight: 700; }
+.daily-stats-title > strong { font-family: Georgia, serif; font-size: 17px; margin-top: 2px; }
+.daily-stats-card > label { display: flex; align-items: center; gap: 9px; border-left: 1px solid var(--line); padding-left: 14px; color: var(--green); }
+.daily-stats-card > label > span { display: flex; flex-direction: column; color: var(--ink); }
+.daily-stats-card label small { color: var(--muted); font-size: 10px; }
+.daily-value { display: flex; align-items: baseline; gap: 4px; font-size: 11px; color: var(--muted); }
+.daily-value input { width: 88px; border: 0; border-bottom: 1px solid #d5d2c8; background: transparent; padding: 3px 0; font-size: 16px; font-weight: 700; color: var(--ink); outline: 0; }
+.daily-value input:focus { border-color: var(--green); }
+.daily-stats-card > button { border: 0; background: var(--green); color: white; border-radius: 9px; padding: 10px 13px; font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.daily-stats-card > button.saved { background: #66896b; }
+.daily-stats-card > button:disabled { opacity: .65; }
+.daily-stats-error { grid-column: 1 / -1; margin: 0; }
 
 .summary-grid { display: grid; grid-template-columns: 1.45fr repeat(2, 1fr); gap: 14px; margin-bottom: 42px; }
 .calorie-card, .macro-card, .meal-card, .details-card { background: var(--paper); border: 1px solid var(--line); box-shadow: 0 8px 30px rgba(49,60,49,.045); }
@@ -201,6 +215,10 @@ main { max-width: 1120px; margin: auto; padding: 32px 24px 80px; }
   main { padding: 22px 14px 60px; }
   .topbar { padding: 0 14px; }
   .summary-grid { grid-template-columns: repeat(2, 1fr); }
+  .daily-stats-card { grid-template-columns: 1fr 1fr; }
+  .daily-stats-title { grid-column: 1 / -1; }
+  .daily-stats-card > label { border-left: 0; padding-left: 0; }
+  .daily-stats-card > button { grid-column: 1 / -1; justify-content: center; }
   .calorie-card { grid-column: 1 / -1; grid-row: auto; }
   .nutrient-grid { grid-template-columns: repeat(2, 1fr); }
   .entry-row { grid-template-columns: auto 1fr auto; }
@@ -226,4 +244,6 @@ main { max-width: 1120px; margin: auto; padding: 32px 24px 80px; }
   .field.wide { grid-column: auto; }
   .form-divider.wide { grid-column: auto; }
   .dialog { padding: 18px; }
+  .daily-stats-card { grid-template-columns: 1fr; }
+  .daily-stats-title, .daily-stats-card > button { grid-column: auto; }
 }

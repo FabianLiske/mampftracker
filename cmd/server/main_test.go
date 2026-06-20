@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -230,5 +231,52 @@ func TestUpdateFoodAffectsExistingEntries(t *testing.T) {
 	}
 	if name != "Neue Brezel" || calories != 300 || amount != 160 {
 		t.Fatalf("unexpected historical view: name=%s calories=%v amount=%v", name, calories, amount)
+	}
+}
+
+func TestDailyStatsRoundTrip(t *testing.T) {
+	a := &app{db: testDB(t)}
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/daily-stats",
+		bytes.NewBufferString(`{"date":"2026-06-20","weight":82.4,"caloriesBurned":2750}`),
+	)
+	response := httptest.NewRecorder()
+	a.putDailyStats(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected success, got %d: %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/daily-stats?date=2026-06-20", nil)
+	response = httptest.NewRecorder()
+	a.getDailyStats(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected success, got %d: %s", response.Code, response.Body.String())
+	}
+	var stats dailyStats
+	if err := json.NewDecoder(response.Body).Decode(&stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Weight == nil || *stats.Weight != 82.4 ||
+		stats.CaloriesBurned == nil || *stats.CaloriesBurned != 2750 {
+		t.Fatalf("unexpected daily stats: %#v", stats)
+	}
+
+	request = httptest.NewRequest(
+		http.MethodPut,
+		"/api/daily-stats",
+		bytes.NewBufferString(`{"date":"2026-06-20","weight":null,"caloriesBurned":null}`),
+	)
+	response = httptest.NewRecorder()
+	a.putDailyStats(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected delete success, got %d: %s", response.Code, response.Body.String())
+	}
+	var count int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM daily_stats`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected the empty daily record to be deleted, got %d rows", count)
 	}
 }
