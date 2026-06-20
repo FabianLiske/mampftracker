@@ -80,6 +80,22 @@ cd frontend && npm run build
 Das Multi-Stage-Dockerfile baut zuerst das React-Frontend und bettet dessen
 statische Dateien anschließend in das Go-Binary ein:
 
+### GitHub Container Registry
+
+Pushes auf `master` bauen automatisch ein Multi-Arch-Image für `linux/amd64`
+und `linux/arm64` und veröffentlichen es unter:
+
+```text
+ghcr.io/fabianliske/mampftracker
+```
+
+Dabei entstehen die Tags `latest` und `sha-<commit>`. Git-Tags wie `v1.2.3`
+erzeugen zusätzlich die Image-Tags `1.2.3` und `1.2`.
+
+Der Workflow kann außerdem über GitHub Actions manuell gestartet werden. Für
+den Push nach GHCR wird das automatisch bereitgestellte `GITHUB_TOKEN`
+verwendet; ein zusätzliches Registry-Secret ist nicht erforderlich.
+
 ### Lokal mit Docker Compose
 
 Voraussetzung ist lediglich eine laufende Docker-Engine mit Docker Compose.
