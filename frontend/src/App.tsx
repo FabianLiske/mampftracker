@@ -46,6 +46,49 @@ function round(value: number, digits = 0) {
   return Math.round(value * factor) / factor
 }
 
+function DecimalInput({ value, onValueChange, decimals = 2, ...props }: {
+  value: number
+  onValueChange: (value: number) => void
+  decimals?: number
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'type' | 'value' | 'onChange'>) {
+  const format = (number: number) => number.toLocaleString('de-DE', {
+    useGrouping: false,
+    maximumFractionDigits: decimals,
+  })
+  const [display, setDisplay] = useState(() => format(value))
+  const [focused, setFocused] = useState(false)
+
+  useEffect(() => {
+    if (!focused) setDisplay(format(value))
+  }, [value, focused])
+
+  return (
+    <input
+      {...props}
+      type="text"
+      inputMode="decimal"
+      value={display}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false)
+        setDisplay(format(value))
+      }}
+      onChange={event => {
+        const input = event.target.value
+        if (!/^\d*([.,]\d*)?$/.test(input)) return
+        setDisplay(input)
+        const normalized = input.replace(',', '.')
+        if (normalized === '' || normalized === '.') {
+          onValueChange(0)
+          return
+        }
+        const parsed = Number(normalized)
+        if (Number.isFinite(parsed)) onValueChange(parsed)
+      }}
+    />
+  )
+}
+
 function entryAmountLabel(entry: Entry) {
   const wholeQuantity = Math.round(entry.quantity)
   if (wholeQuantity > 1 && Math.abs(entry.quantity - wholeQuantity) < 0.001) {
@@ -536,8 +579,8 @@ function EditFoodForm({ food, onCancel, onSaved }: {
   const [error, setError] = useState('')
   const setText = (key: 'name' | 'brand' | 'barcode', value: string) =>
     setForm(current => ({ ...current, [key]: value }))
-  const setNumber = (key: keyof Food, value: string) =>
-    setForm(current => ({ ...current, [key]: Number(value) }))
+  const setNumber = (key: keyof Food, value: number) =>
+    setForm(current => ({ ...current, [key]: value }))
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -568,8 +611,8 @@ function EditFoodForm({ food, onCancel, onSaved }: {
           <input inputMode="numeric" value={form.barcode} onChange={event => setText('barcode', event.target.value)} />
         </label>
         <label className="field wide"><span>Standardmenge (g)</span>
-          <input type="number" min="0.1" max="10000" step="0.1" value={form.servingSize}
-            onChange={event => setNumber('servingSize', event.target.value)} />
+          <DecimalInput value={form.servingSize} decimals={1}
+            onValueChange={value => setNumber('servingSize', value)} />
         </label>
         <div className="form-divider wide">Nährwerte pro 100 g</div>
         {([
@@ -578,17 +621,17 @@ function EditFoodForm({ food, onCancel, onSaved }: {
           ['saturatedFat', 'Gesättigte Fettsäuren', 'g'], ['salt', 'Salz', 'g'],
         ] as const).map(([key, label, unit]) => (
           <label className="field" key={key}><span>{label} ({unit})</span>
-            <input type="number" min="0" step="0.01" value={form[key]}
-              onChange={event => setNumber(key, event.target.value)} />
+            <DecimalInput value={form[key]} decimals={2}
+              onValueChange={value => setNumber(key, value)} />
           </label>
         ))}
         <div className="form-divider wide">Mikronährstoffe pro 100 g (mg)</div>
         {editableMicros.map(name => (
           <label className="field" key={name}><span>{name} (mg)</span>
-            <input type="number" min="0" step="0.001" value={form.micros[name] || 0}
-              onChange={event => setForm(current => ({
+            <DecimalInput value={form.micros[name] || 0} decimals={3}
+              onValueChange={value => setForm(current => ({
                 ...current,
-                micros: { ...current.micros, [name]: Number(event.target.value) },
+                micros: { ...current.micros, [name]: value },
               }))} />
           </label>
         ))}
@@ -1010,8 +1053,10 @@ function ManualFood({ onCancel, onCreated }: { onCancel: () => void; onCreated: 
   })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const set = (key: keyof typeof form, value: string) =>
-    setForm(current => ({ ...current, [key]: key === 'name' || key === 'brand' || key === 'barcode' ? value : Number(value) }))
+  const setText = (key: 'name' | 'brand' | 'barcode', value: string) =>
+    setForm(current => ({ ...current, [key]: value }))
+  const setNumber = (key: Exclude<keyof typeof form, 'name' | 'brand' | 'barcode'>, value: number) =>
+    setForm(current => ({ ...current, [key]: value }))
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true)
@@ -1033,26 +1078,29 @@ function ManualFood({ onCancel, onCreated }: { onCancel: () => void; onCreated: 
       <button type="button" className="back-link" onClick={onCancel}><ChevronLeft size={17} /> Zurück zur Suche</button>
       <p className="form-hint">Alle Nährwerte beziehen sich auf 100 g.</p>
       <div className="field-grid">
-        <label className="field wide"><span>Name *</span><input required value={form.name} onChange={e => set('name', e.target.value)} /></label>
-        <label className="field"><span>Marke</span><input value={form.brand} onChange={e => set('brand', e.target.value)} /></label>
-        <label className="field"><span>Barcode</span><input inputMode="numeric" value={form.barcode} onChange={e => set('barcode', e.target.value)} /></label>
+        <label className="field wide"><span>Name *</span><input required value={form.name} onChange={e => setText('name', e.target.value)} /></label>
+        <label className="field"><span>Marke</span><input value={form.brand} onChange={e => setText('brand', e.target.value)} /></label>
+        <label className="field"><span>Barcode</span><input inputMode="numeric" value={form.barcode} onChange={e => setText('barcode', e.target.value)} /></label>
         <label className="field wide"><span>Standardmenge beim Eintragen (g)</span>
-          <input type="number" min="0.1" max="10000" step="0.1" value={form.servingSize}
-            onChange={e => set('servingSize', e.target.value)} />
+          <DecimalInput value={form.servingSize} decimals={1}
+            onValueChange={value => setNumber('servingSize', value)} />
         </label>
         {([
           ['calories', 'Kalorien', 'kcal'], ['protein', 'Protein', 'g'], ['carbs', 'Kohlenhydrate', 'g'],
           ['fat', 'Fett', 'g'], ['fiber', 'Ballaststoffe', 'g'], ['sugar', 'Zucker', 'g'],
           ['saturatedFat', 'Gesättigt', 'g'], ['salt', 'Salz', 'g'],
         ] as const).map(([key, label, unit]) => (
-          <label className="field" key={key}><span>{label} ({unit})</span><input type="number" min="0" step="0.01" value={form[key]} onChange={e => set(key, e.target.value)} /></label>
+          <label className="field" key={key}><span>{label} ({unit})</span>
+            <DecimalInput value={form[key]} decimals={2}
+              onValueChange={value => setNumber(key, value)} />
+          </label>
         ))}
         <div className="form-divider wide">Mikronährstoffe (mg pro 100 g)</div>
         {Object.entries(micros).map(([name, value]) => (
           <label className="field" key={name}>
             <span>{name} (mg)</span>
-            <input type="number" min="0" step="0.001" value={value}
-              onChange={event => setMicros(current => ({ ...current, [name]: Number(event.target.value) }))} />
+            <DecimalInput value={value} decimals={3}
+              onValueChange={newValue => setMicros(current => ({ ...current, [name]: newValue }))} />
           </label>
         ))}
       </div>
