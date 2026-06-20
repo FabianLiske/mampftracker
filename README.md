@@ -9,6 +9,8 @@ liegen ausschließlich in einer lokalen SQLite-Datenbank.
 
 - Tagesprotokoll für Frühstück, Mittagessen, Abendessen, Snacks und Getränke
 - Tägliche Erfassung von Körpergewicht und Smartwatch-Verbrauch
+- Tagesmarkierung für unvollständig erfassten Intake
+- Gemeinsamer Verlauf für Kalorienaufnahme, Verbrauch und Gewicht mit frei wählbarem Zeitraum
 - Tagesziele für Kalorien, Protein, Kohlenhydrate, Fett und Ballaststoffe
 - Detailwerte für Zucker, gesättigte Fettsäuren, Salz und Mikronährstoffe
 - Manuell angelegte Lebensmittel inklusive Mikronährstoffen
@@ -245,4 +247,5 @@ werden.
 - `DELETE /api/entries/{id}`
 - `GET|PUT /api/goals`
 - `GET|PUT /api/daily-stats`
+- `GET /api/history?from=YYYY-MM-DD&to=YYYY-MM-DD`
 - `GET /api/health`

@@ -239,7 +239,7 @@ func TestDailyStatsRoundTrip(t *testing.T) {
 	request := httptest.NewRequest(
 		http.MethodPut,
 		"/api/daily-stats",
-		bytes.NewBufferString(`{"date":"2026-06-20","weight":82.4,"caloriesBurned":2750}`),
+		bytes.NewBufferString(`{"date":"2026-06-20","weight":82.44,"caloriesBurned":2750,"intakeIncomplete":true}`),
 	)
 	response := httptest.NewRecorder()
 	a.putDailyStats(response, request)
@@ -258,14 +258,15 @@ func TestDailyStatsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stats.Weight == nil || *stats.Weight != 82.4 ||
-		stats.CaloriesBurned == nil || *stats.CaloriesBurned != 2750 {
+		stats.CaloriesBurned == nil || *stats.CaloriesBurned != 2750 ||
+		!stats.IntakeIncomplete {
 		t.Fatalf("unexpected daily stats: %#v", stats)
 	}
 
 	request = httptest.NewRequest(
 		http.MethodPut,
 		"/api/daily-stats",
-		bytes.NewBufferString(`{"date":"2026-06-20","weight":null,"caloriesBurned":null}`),
+		bytes.NewBufferString(`{"date":"2026-06-20","weight":null,"caloriesBurned":null,"intakeIncomplete":false}`),
 	)
 	response = httptest.NewRecorder()
 	a.putDailyStats(response, request)
@@ -278,5 +279,56 @@ func TestDailyStatsRoundTrip(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected the empty daily record to be deleted, got %d rows", count)
+	}
+}
+
+func TestHistoryIncludesRangeAndGaps(t *testing.T) {
+	a := &app{db: testDB(t)}
+	foodID, err := a.insertFood(food{
+		Name: "Testessen", ServingSize: 100, ServingUnit: "g",
+		Calories: 500, Micros: map[string]float64{}, Source: "manual",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(
+		`INSERT INTO entries(food_id, entry_date, meal, amount) VALUES (?, ?, ?, ?)`,
+		foodID, "2026-06-19", "dinner", 200,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(
+		`INSERT INTO daily_stats(entry_date, weight, calories_burned) VALUES (?, ?, ?)`,
+		"2026-06-20", 81.5, 2600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/api/history?from=2026-06-18&to=2026-06-20",
+		nil,
+	)
+	response := httptest.NewRecorder()
+	a.getHistory(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected success, got %d: %s", response.Code, response.Body.String())
+	}
+	var points []historyPoint
+	if err := json.NewDecoder(response.Body).Decode(&points); err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 3 {
+		t.Fatalf("expected 3 days, got %d", len(points))
+	}
+	if points[0].CaloriesIn != nil || points[0].Weight != nil {
+		t.Fatalf("expected an empty first day: %#v", points[0])
+	}
+	if points[1].CaloriesIn == nil || *points[1].CaloriesIn != 1000 {
+		t.Fatalf("expected 1000 kcal intake: %#v", points[1])
+	}
+	if points[2].Weight == nil || *points[2].Weight != 81.5 ||
+		points[2].CaloriesBurned == nil || *points[2].CaloriesBurned != 2600 {
+		t.Fatalf("unexpected daily values: %#v", points[2])
 	}
 }

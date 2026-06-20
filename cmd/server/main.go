@@ -75,9 +75,18 @@ type goals struct {
 }
 
 type dailyStats struct {
-	Date           string   `json:"date"`
-	Weight         *float64 `json:"weight"`
-	CaloriesBurned *float64 `json:"caloriesBurned"`
+	Date             string   `json:"date"`
+	Weight           *float64 `json:"weight"`
+	CaloriesBurned   *float64 `json:"caloriesBurned"`
+	IntakeIncomplete bool     `json:"intakeIncomplete"`
+}
+
+type historyPoint struct {
+	Date             string   `json:"date"`
+	CaloriesIn       *float64 `json:"caloriesIn"`
+	Weight           *float64 `json:"weight"`
+	CaloriesBurned   *float64 `json:"caloriesBurned"`
+	IntakeIncomplete bool     `json:"intakeIncomplete"`
 }
 
 type offNutriments struct {
@@ -138,6 +147,7 @@ func main() {
 	mux.HandleFunc("PUT /api/goals", a.putGoals)
 	mux.HandleFunc("GET /api/daily-stats", a.getDailyStats)
 	mux.HandleFunc("PUT /api/daily-stats", a.putDailyStats)
+	mux.HandleFunc("GET /api/history", a.getHistory)
 	mux.Handle("/", spaHandler())
 
 	server := &http.Server{
@@ -208,6 +218,7 @@ func migrate(db *sql.DB) error {
 			entry_date TEXT PRIMARY KEY,
 			weight REAL,
 			calories_burned REAL,
+			intake_incomplete INTEGER NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 		INSERT OR IGNORE INTO settings(key, value)
@@ -224,6 +235,7 @@ func migrate(db *sql.DB) error {
 	for _, migration := range []string{
 		`ALTER TABLE entries ADD COLUMN quantity REAL NOT NULL DEFAULT 1`,
 		`ALTER TABLE entries ADD COLUMN unit_amount REAL`,
+		`ALTER TABLE daily_stats ADD COLUMN intake_incomplete INTEGER NOT NULL DEFAULT 0`,
 	} {
 		_, err = db.Exec(migration)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
@@ -740,9 +752,9 @@ func (a *app) getDailyStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := dailyStats{Date: date}
 	err := a.db.QueryRow(`
-		SELECT weight, calories_burned
+		SELECT weight, calories_burned, intake_incomplete
 		FROM daily_stats WHERE entry_date = ?`, date,
-	).Scan(&stats.Weight, &stats.CaloriesBurned)
+	).Scan(&stats.Weight, &stats.CaloriesBurned, &stats.IntakeIncomplete)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "Tageswerte konnten nicht geladen werden")
 		return
@@ -765,13 +777,17 @@ func (a *app) putDailyStats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Das Gewicht muss zwischen 0 und 500 kg liegen")
 		return
 	}
+	if stats.Weight != nil {
+		rounded := math.Round(*stats.Weight*10) / 10
+		stats.Weight = &rounded
+	}
 	if stats.CaloriesBurned != nil &&
 		(*stats.CaloriesBurned < 0 || *stats.CaloriesBurned > 20000 ||
 			math.IsNaN(*stats.CaloriesBurned) || math.IsInf(*stats.CaloriesBurned, 0)) {
 		writeError(w, http.StatusBadRequest, "Der Verbrauch muss zwischen 0 und 20.000 kcal liegen")
 		return
 	}
-	if stats.Weight == nil && stats.CaloriesBurned == nil {
+	if stats.Weight == nil && stats.CaloriesBurned == nil && !stats.IntakeIncomplete {
 		if _, err := a.db.Exec(`DELETE FROM daily_stats WHERE entry_date = ?`, stats.Date); err != nil {
 			writeError(w, http.StatusInternalServerError, "Tageswerte konnten nicht gelöscht werden")
 			return
@@ -780,19 +796,92 @@ func (a *app) putDailyStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err := a.db.Exec(`
-		INSERT INTO daily_stats(entry_date, weight, calories_burned, updated_at)
-		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO daily_stats(entry_date, weight, calories_burned, intake_incomplete, updated_at)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(entry_date) DO UPDATE SET
 			weight = excluded.weight,
 			calories_burned = excluded.calories_burned,
+			intake_incomplete = excluded.intake_incomplete,
 			updated_at = CURRENT_TIMESTAMP`,
-		stats.Date, stats.Weight, stats.CaloriesBurned,
+		stats.Date, stats.Weight, stats.CaloriesBurned, stats.IntakeIncomplete,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Tageswerte konnten nicht gespeichert werden")
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+func (a *app) getHistory(w http.ResponseWriter, r *http.Request) {
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+	fromDate, fromErr := time.Parse("2006-01-02", from)
+	toDate, toErr := time.Parse("2006-01-02", to)
+	if fromErr != nil || toErr != nil || fromDate.After(toDate) {
+		writeError(w, http.StatusBadRequest, "Gültiges Start- und Enddatum sind erforderlich")
+		return
+	}
+	if toDate.Sub(fromDate) > 366*24*time.Hour {
+		writeError(w, http.StatusBadRequest, "Der Zeitraum darf höchstens 366 Tage umfassen")
+		return
+	}
+
+	rows, err := a.db.Query(`
+		SELECT d.entry_date AS entry_date,
+		       CASE WHEN COUNT(e.id) > 0
+		            THEN SUM(e.amount / 100.0 * f.calories)
+		            ELSE NULL END AS calories_in,
+		       d.weight,
+		       d.calories_burned,
+		       d.intake_incomplete
+		FROM daily_stats d
+		LEFT JOIN entries e ON e.entry_date = d.entry_date
+		LEFT JOIN foods f ON f.id = e.food_id
+		WHERE d.entry_date BETWEEN ? AND ?
+		GROUP BY d.entry_date, d.weight, d.calories_burned, d.intake_incomplete
+		UNION
+		SELECT e.entry_date AS entry_date,
+		       SUM(e.amount / 100.0 * f.calories) AS calories_in,
+		       NULL AS weight,
+		       NULL AS calories_burned,
+		       0 AS intake_incomplete
+		FROM entries e
+		JOIN foods f ON f.id = e.food_id
+		LEFT JOIN daily_stats d ON d.entry_date = e.entry_date
+		WHERE e.entry_date BETWEEN ? AND ? AND d.entry_date IS NULL
+		GROUP BY e.entry_date
+		ORDER BY entry_date`,
+		from, to, from, to,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Verlauf konnte nicht geladen werden")
+		return
+	}
+	defer rows.Close()
+
+	byDate := map[string]historyPoint{}
+	for rows.Next() {
+		var point historyPoint
+		if err := rows.Scan(
+			&point.Date, &point.CaloriesIn, &point.Weight,
+			&point.CaloriesBurned, &point.IntakeIncomplete,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "Verlauf konnte nicht gelesen werden")
+			return
+		}
+		byDate[point.Date] = point
+	}
+
+	points := make([]historyPoint, 0, int(toDate.Sub(fromDate).Hours()/24)+1)
+	for date := fromDate; !date.After(toDate); date = date.AddDate(0, 0, 1) {
+		key := date.Format("2006-01-02")
+		point, ok := byDate[key]
+		if !ok {
+			point = historyPoint{Date: key}
+		}
+		points = append(points, point)
+	}
+	writeJSON(w, http.StatusOK, points)
 }
 
 func spaHandler() http.Handler {

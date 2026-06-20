@@ -47,6 +47,15 @@ export interface DailyStats {
   date: string
   weight: number | null
   caloriesBurned: number | null
+  intakeIncomplete: boolean
+}
+
+export interface HistoryPoint {
+  date: string
+  caloriesIn: number | null
+  weight: number | null
+  caloriesBurned: number | null
+  intakeIncomplete: boolean
 }
 
 export interface Totals extends Goals {

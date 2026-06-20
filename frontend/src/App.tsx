@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity, Barcode, BookOpen, ChevronLeft, ChevronRight, CirclePlus, Flame, Leaf,
-  LoaderCircle, Minus, PencilLine, Plus, Save, Scale, ScanLine, Settings2, Trash2, X,
+  Activity, Barcode, BookOpen, ChevronLeft, ChevronRight, CircleAlert, CirclePlus, Flame, Leaf,
+  LoaderCircle, Minus, PencilLine, Plus, Save, Scale, ScanLine, Settings2,
+  Trash2, TrendingUp, X,
 } from 'lucide-react'
 import { api } from './api'
-import type { DailyStats, Entry, Food, Goals, Meal, Totals } from './types'
+import type { DailyStats, Entry, Food, Goals, HistoryPoint, Meal, Totals } from './types'
 
 const meals: { id: Meal; label: string; icon: string }[] = [
   { id: 'breakfast', label: 'Frühstück', icon: '☀️' },
@@ -25,6 +26,10 @@ function shiftDate(value: string, days: number) {
   const date = new Date(`${value}T12:00:00`)
   date.setDate(date.getDate() + days)
   return localDate(date)
+}
+
+function weeksAgo(weeks: number) {
+  return shiftDate(localDate(), -(weeks * 7 - 1))
 }
 
 function formatDate(value: string) {
@@ -76,7 +81,9 @@ export default function App() {
   const [date, setDate] = useState(localDate())
   const [entries, setEntries] = useState<Entry[]>([])
   const [goals, setGoals] = useState<Goals>(emptyGoals)
-  const [dailyStats, setDailyStats] = useState<DailyStats>({ date: localDate(), weight: null, caloriesBurned: null })
+  const [dailyStats, setDailyStats] = useState<DailyStats>({
+    date: localDate(), weight: null, caloriesBurned: null, intakeIncomplete: false,
+  })
   const [loading, setLoading] = useState(true)
   const [addMeal, setAddMeal] = useState<Meal | null>(null)
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null)
@@ -176,6 +183,7 @@ export default function App() {
         )}
 
         <NutrientDetails totals={totals} />
+        <HistoryChart />
       </main>
 
       {addMeal && (
@@ -206,12 +214,163 @@ export default function App() {
   )
 }
 
+const chartWidth = 1000
+const chartHeight = 360
+const chartPadding = { top: 24, right: 64, bottom: 44, left: 64 }
+
+function HistoryChart() {
+  const [from, setFrom] = useState(weeksAgo(4))
+  const [to, setTo] = useState(localDate())
+  const [points, setPoints] = useState<HistoryPoint[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [hovered, setHovered] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!from || !to || from > to) {
+      setError('Das Startdatum muss vor dem Enddatum liegen.')
+      return
+    }
+    let active = true
+    setLoading(true); setError('')
+    api.history(from, to)
+      .then(data => { if (active) setPoints(data) })
+      .catch(err => { if (active) setError(err instanceof Error ? err.message : 'Verlauf konnte nicht geladen werden') })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [from, to])
+
+  const innerWidth = chartWidth - chartPadding.left - chartPadding.right
+  const innerHeight = chartHeight - chartPadding.top - chartPadding.bottom
+  const calorieValues = points.flatMap(point =>
+    [point.caloriesIn, point.caloriesBurned].filter((value): value is number => value !== null))
+  const weightValues = points.flatMap(point => point.weight === null ? [] : [point.weight])
+  const calorieMax = Math.max(1000, Math.ceil(Math.max(...calorieValues, 0) / 500) * 500)
+  const weightMinRaw = weightValues.length ? Math.min(...weightValues) : 0
+  const weightMaxRaw = weightValues.length ? Math.max(...weightValues) : 0
+  const weightMin = weightValues.length ? Math.floor((weightMinRaw - 1) * 2) / 2 : 0
+  const weightMax = weightValues.length ? Math.ceil((weightMaxRaw + 1) * 2) / 2 : 100
+  const weightRange = Math.max(weightMax - weightMin, 1)
+  const x = (index: number) => chartPadding.left + (points.length <= 1 ? innerWidth / 2 : index / (points.length - 1) * innerWidth)
+  const calorieY = (value: number) => chartPadding.top + innerHeight - value / calorieMax * innerHeight
+  const weightY = (value: number) => chartPadding.top + innerHeight - (value - weightMin) / weightRange * innerHeight
+
+  const segments = (getValue: (point: HistoryPoint) => number | null, getY: (value: number) => number) => {
+    const result: string[] = []
+    let current: string[] = []
+    points.forEach((point, index) => {
+      const value = getValue(point)
+      if (value === null) {
+        if (current.length) result.push(current.join(' '))
+        current = []
+      } else {
+        current.push(`${current.length ? 'L' : 'M'} ${x(index)} ${getY(value)}`)
+      }
+    })
+    if (current.length) result.push(current.join(' '))
+    return result
+  }
+
+  const calorieTicks = [0, .25, .5, .75, 1].map(ratio => calorieMax * ratio)
+  const dateTicks = points.length
+    ? Array.from(new Set([0, Math.floor((points.length - 1) / 2), points.length - 1]))
+    : []
+  const selectedPoint = hovered === null ? null : points[hovered]
+
+  return (
+    <section className="history-card">
+      <div className="history-head">
+        <div className="section-heading compact">
+          <div><span>Verlauf</span><h2>Energie & Gewicht</h2></div>
+        </div>
+        <div className="history-controls">
+          <div className="range-presets">
+            {[2, 4, 8, 12].map(weeks => (
+              <button key={weeks}
+                className={from === weeksAgo(weeks) && to === localDate() ? 'active' : ''}
+                onClick={() => { setFrom(weeksAgo(weeks)); setTo(localDate()) }}>
+                {weeks} W
+              </button>
+            ))}
+          </div>
+          <label><span>Von</span><input type="date" value={from} max={to} onChange={event => setFrom(event.target.value)} /></label>
+          <label><span>Bis</span><input type="date" value={to} min={from} onChange={event => setTo(event.target.value)} /></label>
+        </div>
+      </div>
+      <div className="chart-legend">
+        <span><i className="legend-in" /> Kalorien rein</span>
+        <span><i className="legend-out" /> Kalorien raus</span>
+        <span><i className="legend-weight" /> Gewicht</span>
+      </div>
+      {error ? <div className="inline-error">{error}</div> : loading ? (
+        <div className="loading-state chart-loading"><LoaderCircle className="spin" /> Verlauf wird geladen …</div>
+      ) : calorieValues.length === 0 && weightValues.length === 0 ? (
+        <div className="empty-chart"><TrendingUp /><strong>Noch nicht genug Daten</strong><span>Trage Mahlzeiten, Verbrauch oder Gewicht ein.</span></div>
+      ) : (
+        <div className="chart-wrap" onMouseLeave={() => setHovered(null)}>
+          <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label="Verlauf von Kalorien und Körpergewicht">
+            {calorieTicks.map(value => (
+              <g key={value}>
+                <line className="chart-grid" x1={chartPadding.left} x2={chartWidth - chartPadding.right}
+                  y1={calorieY(value)} y2={calorieY(value)} />
+                <text className="axis-label" x={chartPadding.left - 10} y={calorieY(value) + 4} textAnchor="end">{round(value)}</text>
+              </g>
+            ))}
+            {weightValues.length > 0 && [weightMin, (weightMin + weightMax) / 2, weightMax].map(value => (
+              <text className="axis-label weight-axis" key={value} x={chartWidth - chartPadding.right + 10}
+                y={weightY(value) + 4}>{round(value, 1)} kg</text>
+            ))}
+            {dateTicks.map(index => (
+              <text className="axis-label" key={index} x={x(index)} y={chartHeight - 14} textAnchor="middle">
+                {new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit' }).format(new Date(`${points[index].date}T12:00:00`))}
+              </text>
+            ))}
+            {segments(point => point.caloriesIn, calorieY).map((path, index) =>
+              <path key={`in-${index}`} className="chart-line calories-in" d={path} />)}
+            {segments(point => point.caloriesBurned, calorieY).map((path, index) =>
+              <path key={`out-${index}`} className="chart-line calories-out" d={path} />)}
+            {segments(point => point.weight, weightY).map((path, index) =>
+              <path key={`weight-${index}`} className="chart-line weight-line" d={path} />)}
+            {points.map((point, index) => (
+              <g key={`dots-${point.date}`}>
+                {point.caloriesIn !== null && <circle className="chart-dot calories-in-dot" cx={x(index)} cy={calorieY(point.caloriesIn)} r="3" />}
+                {point.caloriesBurned !== null && <circle className="chart-dot calories-out-dot" cx={x(index)} cy={calorieY(point.caloriesBurned)} r="3" />}
+                {point.weight !== null && <circle className="chart-dot weight-dot" cx={x(index)} cy={weightY(point.weight)} r="3" />}
+              </g>
+            ))}
+            {points.map((point, index) => (
+              <rect key={point.date} className="chart-hit" x={x(index) - Math.max(innerWidth / points.length / 2, 3)}
+                y={chartPadding.top} width={Math.max(innerWidth / points.length, 6)} height={innerHeight}
+                onMouseEnter={() => setHovered(index)} />
+            ))}
+            {hovered !== null && <line className="hover-line" x1={x(hovered)} x2={x(hovered)}
+              y1={chartPadding.top} y2={chartPadding.top + innerHeight} />}
+          </svg>
+          {selectedPoint && (
+            <div className={`chart-tooltip ${hovered !== null && x(hovered) > chartWidth * .72 ? 'align-right' : ''}`}
+              style={{ left: `${x(hovered!) / chartWidth * 100}%` }}>
+              <strong>{new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(`${selectedPoint.date}T12:00:00`))}</strong>
+              <span>Rein: {selectedPoint.caloriesIn === null ? '–' : `${round(selectedPoint.caloriesIn)} kcal`}</span>
+              <span>Raus: {selectedPoint.caloriesBurned === null ? '–' : `${round(selectedPoint.caloriesBurned)} kcal`}</span>
+              <span>Gewicht: {selectedPoint.weight === null ? '–' : `${round(selectedPoint.weight, 1)} kg`}</span>
+              {selectedPoint.intakeIncomplete && (
+                <span className="tooltip-warning"><CircleAlert size={12} /> Intake unvollständig</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function DailyStatsCard({ stats, onSaved }: {
   stats: DailyStats
   onSaved: (stats: DailyStats) => void
 }) {
-  const [weight, setWeight] = useState(stats.weight?.toString() ?? '')
+  const [weight, setWeight] = useState(stats.weight?.toFixed(1).replace('.', ',') ?? '')
   const [caloriesBurned, setCaloriesBurned] = useState(stats.caloriesBurned?.toString() ?? '')
+  const [intakeIncomplete, setIntakeIncomplete] = useState(stats.intakeIncomplete)
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
@@ -220,12 +379,21 @@ function DailyStatsCard({ stats, onSaved }: {
     event.preventDefault()
     setBusy(true); setSaved(false); setError('')
     try {
+      const normalizedWeight = weight.trim().replace(',', '.')
+      const parsedWeight = normalizedWeight === '' ? null : Number(normalizedWeight)
+      if (parsedWeight !== null && !Number.isFinite(parsedWeight)) {
+        setError('Bitte gib ein gültiges Gewicht ein.')
+        setBusy(false)
+        return
+      }
       const updated = await api.updateDailyStats({
         date: stats.date,
-        weight: weight === '' ? null : Number(weight),
+        weight: parsedWeight,
         caloriesBurned: caloriesBurned === '' ? null : Number(caloriesBurned),
+        intakeIncomplete,
       })
       onSaved(updated)
+      setWeight(updated.weight?.toFixed(1).replace('.', ',') ?? '')
       setSaved(true)
       window.setTimeout(() => setSaved(false), 1800)
     } catch (err) {
@@ -244,8 +412,12 @@ function DailyStatsCard({ stats, onSaved }: {
       <label>
         <Scale size={19} />
         <span><small>Körpergewicht</small>
-          <span className="daily-value"><input type="number" min="0.1" max="500" step="0.1"
-            placeholder="–" value={weight} onChange={event => setWeight(event.target.value)} /> kg</span>
+          <span className="daily-value"><input type="text" inputMode="decimal"
+            placeholder="–" value={weight}
+            onChange={event => {
+              const value = event.target.value
+              if (/^\d{0,3}([.,]\d?)?$/.test(value)) setWeight(value)
+            }} /> kg</span>
         </span>
       </label>
       <label>
@@ -254,6 +426,11 @@ function DailyStatsCard({ stats, onSaved }: {
           <span className="daily-value"><input type="number" min="0" max="20000" step="1"
             placeholder="–" value={caloriesBurned} onChange={event => setCaloriesBurned(event.target.value)} /> kcal</span>
         </span>
+      </label>
+      <label className="incomplete-toggle">
+        <input type="checkbox" checked={intakeIncomplete}
+          onChange={event => setIntakeIncomplete(event.target.checked)} />
+        <span><small>Trackingstatus</small><strong>Intake unvollständig</strong></span>
       </label>
       <button className={saved ? 'saved' : ''} disabled={busy}>
         {busy ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}

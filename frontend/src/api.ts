@@ -1,4 +1,4 @@
-import type { DailyStats, Entry, Food, Goals, Meal } from './types'
+import type { DailyStats, Entry, Food, Goals, HistoryPoint, Meal } from './types'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -60,4 +60,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(stats),
     }),
+  history: (from: string, to: string) =>
+    request<HistoryPoint[]>(`/api/history?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
 }
