@@ -23,6 +23,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ...food, source: 'manual', imageUrl: '' }),
     }),
+  updateFood: (food: Food) =>
+    request<Food>(`/api/foods/${food.id}`, {
+      method: 'PUT',
+      body: JSON.stringify(food),
+    }),
   updateServing: (foodId: number, servingSize: number) =>
     request<Food>(`/api/foods/${foodId}/serving`, {
       method: 'PUT',

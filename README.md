@@ -7,10 +7,11 @@ liegen ausschließlich in einer lokalen SQLite-Datenbank.
 
 ## Funktionen
 
-- Tagesprotokoll für Frühstück, Mittagessen, Abendessen und Snacks
+- Tagesprotokoll für Frühstück, Mittagessen, Abendessen, Snacks und Getränke
 - Tagesziele für Kalorien, Protein, Kohlenhydrate, Fett und Ballaststoffe
 - Detailwerte für Zucker, gesättigte Fettsäuren, Salz und Mikronährstoffe
 - Manuell angelegte Lebensmittel inklusive Mikronährstoffen
+- Zentrale Übersicht und Bearbeitung aller bekannten Lebensmittel
 - Gespeicherte Standardmengen für Produkte und manuell angelegte Lebensmittel
 - Optionaler Anzahl-Multiplikator, beispielsweise `2 × 80 g` für zwei Brezeln
 - Barcode-Suche über Open Food Facts
@@ -234,6 +235,7 @@ werden.
 
 - `GET /api/foods?q=...`
 - `POST /api/foods`
+- `PUT /api/foods/{id}`
 - `PUT /api/foods/{id}/serving`
 - `GET /api/foods/barcode/{code}`
 - `GET /api/entries?date=YYYY-MM-DD`

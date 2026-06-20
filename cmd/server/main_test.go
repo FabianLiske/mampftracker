@@ -67,6 +67,9 @@ func TestHelpers(t *testing.T) {
 	if !digitsOnly("12345678") || digitsOnly("1234x678") {
 		t.Fatal("barcode validation returned an unexpected result")
 	}
+	if !validMeal("drinks") || validMeal("brunch") {
+		t.Fatal("meal validation returned an unexpected result")
+	}
 }
 
 func TestBasicAuth(t *testing.T) {
@@ -181,5 +184,51 @@ func TestUpdateEntry(t *testing.T) {
 	if meal != "lunch" || amount != 250 || quantity != 2 || unitAmount != 125 {
 		t.Fatalf("unexpected updated entry: meal=%s amount=%v quantity=%v unit=%v",
 			meal, amount, quantity, unitAmount)
+	}
+}
+
+func TestUpdateFoodAffectsExistingEntries(t *testing.T) {
+	a := &app{db: testDB(t)}
+	foodID, err := a.insertFood(food{
+		Name: "Alte Brezel", ServingSize: 80, ServingUnit: "g",
+		Calories: 250, Micros: map[string]float64{}, Source: "manual",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(
+		`INSERT INTO entries(food_id, entry_date, meal, amount) VALUES (?, ?, ?, ?)`,
+		foodID, "2026-06-20", "breakfast", 160,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/foods/1",
+		bytes.NewBufferString(`{
+			"id":1,"name":"Neue Brezel","brand":"Bäcker","barcode":"",
+			"servingSize":80,"servingUnit":"g","calories":300,"protein":9,
+			"carbs":55,"fat":4,"fiber":3,"sugar":2,"saturatedFat":1,
+			"salt":2,"micros":{"Eisen":1.5},"source":"manual","imageUrl":""
+		}`),
+	)
+	request.SetPathValue("id", strconv.FormatInt(foodID, 10))
+	response := httptest.NewRecorder()
+	a.updateFood(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected success, got %d: %s", response.Code, response.Body.String())
+	}
+
+	var name string
+	var calories, amount float64
+	if err := a.db.QueryRow(`
+		SELECT f.name, f.calories, e.amount
+		FROM entries e JOIN foods f ON f.id = e.food_id
+		WHERE e.food_id = ?`, foodID).Scan(&name, &calories, &amount); err != nil {
+		t.Fatal(err)
+	}
+	if name != "Neue Brezel" || calories != 300 || amount != 160 {
+		t.Fatalf("unexpected historical view: name=%s calories=%v amount=%v", name, calories, amount)
 	}
 }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Barcode, ChevronLeft, ChevronRight, CirclePlus, Flame, Leaf,
+  Barcode, BookOpen, ChevronLeft, ChevronRight, CirclePlus, Flame, Leaf,
   LoaderCircle, Minus, PencilLine, Plus, ScanLine, Settings2, Trash2, X,
 } from 'lucide-react'
 import { api } from './api'
@@ -11,6 +11,7 @@ const meals: { id: Meal; label: string; icon: string }[] = [
   { id: 'lunch', label: 'Mittagessen', icon: '🥗' },
   { id: 'dinner', label: 'Abendessen', icon: '🌙' },
   { id: 'snack', label: 'Snacks', icon: '🍎' },
+  { id: 'drinks', label: 'Getränke', icon: '🥤' },
 ]
 
 const emptyGoals: Goals = { calories: 2200, protein: 140, carbs: 250, fat: 70, fiber: 30 }
@@ -78,6 +79,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [addMeal, setAddMeal] = useState<Meal | null>(null)
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null)
+  const [foodsOpen, setFoodsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [error, setError] = useState('')
 
@@ -114,9 +116,14 @@ export default function App() {
           <span className="brand-mark"><Leaf size={22} strokeWidth={2.4} /></span>
           <span>Mampf<span>Tracker</span></span>
         </a>
-        <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Ziele öffnen">
-          <Settings2 size={21} />
-        </button>
+        <div className="topbar-actions">
+          <button className="icon-button" onClick={() => setFoodsOpen(true)} aria-label="Lebensmittel verwalten" title="Lebensmittel">
+            <BookOpen size={21} />
+          </button>
+          <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Ziele öffnen" title="Tagesziele">
+            <Settings2 size={21} />
+          </button>
+        </div>
       </header>
 
       <main>
@@ -182,11 +189,175 @@ export default function App() {
           }}
         />
       )}
+      {foodsOpen && <FoodLibrary onClose={() => setFoodsOpen(false)} onFoodUpdated={() => void load()} />}
       {settingsOpen && (
         <GoalsDialog goals={goals} onClose={() => setSettingsOpen(false)}
           onSave={newGoals => { setGoals(newGoals); setSettingsOpen(false) }} />
       )}
     </div>
+  )
+}
+
+const editableMicros = [
+  'Natrium', 'Calcium', 'Eisen', 'Magnesium', 'Kalium', 'Zink',
+  'Vitamin C', 'Vitamin B12', 'Vitamin D',
+]
+
+function FoodLibrary({ onClose, onFoodUpdated }: { onClose: () => void; onFoodUpdated: () => void }) {
+  const [foods, setFoods] = useState<Food[]>([])
+  const [query, setQuery] = useState('')
+  const [editing, setEditing] = useState<Food | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  const loadFoods = async (search = '') => {
+    setLoading(true)
+    try {
+      setFoods(await api.foods(search))
+      setError('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lebensmittel konnten nicht geladen werden')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadFoods(query), 180)
+    return () => window.clearTimeout(timer)
+  }, [query])
+
+  return (
+    <div className="dialog-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+      <div className="dialog food-library-dialog">
+        <div className="dialog-head">
+          <div><span>Lebensmittelverwaltung</span><h2>{editing ? 'Lebensmittel bearbeiten' : 'Bekannte Lebensmittel'}</h2></div>
+          <button className="icon-button" onClick={onClose}><X /></button>
+        </div>
+        {editing ? (
+          <EditFoodForm
+            food={editing}
+            onCancel={() => setEditing(null)}
+            onSaved={updated => {
+              setFoods(current => current.map(food => food.id === updated.id ? updated : food))
+              setEditing(null)
+              onFoodUpdated()
+            }}
+          />
+        ) : (
+          <>
+            <div className="search-box">
+              <BookOpen />
+              <input autoFocus placeholder="Name, Marke oder Barcode suchen …"
+                value={query} onChange={event => setQuery(event.target.value)} />
+            </div>
+            <p className="library-note">
+              Änderungen an Namen und Nährwerten gelten auch rückwirkend für alle Mahlzeiteneinträge.
+            </p>
+            {loading ? (
+              <div className="loading-state small"><LoaderCircle className="spin" /> Lebensmittel werden geladen …</div>
+            ) : (
+              <div className="food-library-list">
+                {foods.map(food => (
+                  <button key={food.id} onClick={() => setEditing(food)}>
+                    <span className="food-thumb">{food.imageUrl ? <img src={food.imageUrl} alt="" /> : food.name[0]}</span>
+                    <span className="library-food-copy">
+                      <strong>{food.name}</strong>
+                      <small>{food.brand || 'Ohne Marke'} · {round(food.calories)} kcal / 100 g</small>
+                      <small>Standardmenge {round(food.servingSize, 1)} g{food.barcode ? ` · ${food.barcode}` : ''}</small>
+                    </span>
+                    <PencilLine size={17} />
+                  </button>
+                ))}
+                {foods.length === 0 && <p className="muted center">Keine Lebensmittel gefunden.</p>}
+              </div>
+            )}
+          </>
+        )}
+        {error && <div className="inline-error">{error}</div>}
+      </div>
+    </div>
+  )
+}
+
+function EditFoodForm({ food, onCancel, onSaved }: {
+  food: Food
+  onCancel: () => void
+  onSaved: (food: Food) => void
+}) {
+  const [form, setForm] = useState<Food>(() => ({
+    ...food,
+    micros: Object.fromEntries(editableMicros.map(name => [name, food.micros?.[name] || 0])),
+  }))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const setText = (key: 'name' | 'brand' | 'barcode', value: string) =>
+    setForm(current => ({ ...current, [key]: value }))
+  const setNumber = (key: keyof Food, value: string) =>
+    setForm(current => ({ ...current, [key]: Number(value) }))
+
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setBusy(true); setError('')
+    try {
+      const updated = await api.updateFood({
+        ...form,
+        micros: Object.fromEntries(Object.entries(form.micros).filter(([, value]) => value > 0)),
+      })
+      onSaved(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lebensmittel konnte nicht gespeichert werden')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form className="edit-food-form" onSubmit={save}>
+      <button type="button" className="back-link" onClick={onCancel}><ChevronLeft size={17} /> Zurück zur Übersicht</button>
+      <div className="field-grid">
+        <label className="field wide"><span>Name *</span>
+          <input required value={form.name} onChange={event => setText('name', event.target.value)} />
+        </label>
+        <label className="field"><span>Marke</span>
+          <input value={form.brand} onChange={event => setText('brand', event.target.value)} />
+        </label>
+        <label className="field"><span>Barcode</span>
+          <input inputMode="numeric" value={form.barcode} onChange={event => setText('barcode', event.target.value)} />
+        </label>
+        <label className="field wide"><span>Standardmenge (g)</span>
+          <input type="number" min="0.1" max="10000" step="0.1" value={form.servingSize}
+            onChange={event => setNumber('servingSize', event.target.value)} />
+        </label>
+        <div className="form-divider wide">Nährwerte pro 100 g</div>
+        {([
+          ['calories', 'Kalorien', 'kcal'], ['protein', 'Protein', 'g'], ['carbs', 'Kohlenhydrate', 'g'],
+          ['fat', 'Fett', 'g'], ['fiber', 'Ballaststoffe', 'g'], ['sugar', 'Zucker', 'g'],
+          ['saturatedFat', 'Gesättigte Fettsäuren', 'g'], ['salt', 'Salz', 'g'],
+        ] as const).map(([key, label, unit]) => (
+          <label className="field" key={key}><span>{label} ({unit})</span>
+            <input type="number" min="0" step="0.01" value={form[key]}
+              onChange={event => setNumber(key, event.target.value)} />
+          </label>
+        ))}
+        <div className="form-divider wide">Mikronährstoffe pro 100 g (mg)</div>
+        {editableMicros.map(name => (
+          <label className="field" key={name}><span>{name} (mg)</span>
+            <input type="number" min="0" step="0.001" value={form.micros[name] || 0}
+              onChange={event => setForm(current => ({
+                ...current,
+                micros: { ...current.micros, [name]: Number(event.target.value) },
+              }))} />
+          </label>
+        ))}
+      </div>
+      <p className="library-warning">
+        Historische Gramm- und Anzahlwerte bleiben unverändert. Ihre Kalorien und Nährwerte werden mit diesen Stammdaten neu berechnet.
+      </p>
+      {error && <div className="inline-error">{error}</div>}
+      <button className="primary-button full" disabled={busy}>
+        {busy ? <LoaderCircle className="spin" /> : <PencilLine />} Lebensmittel speichern
+      </button>
+    </form>
   )
 }
 

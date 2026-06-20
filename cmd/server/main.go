@@ -122,6 +122,7 @@ func main() {
 	mux.HandleFunc("GET /api/foods", a.listFoods)
 	mux.HandleFunc("POST /api/foods", a.createFood)
 	mux.HandleFunc("GET /api/foods/barcode/{barcode}", a.barcode)
+	mux.HandleFunc("PUT /api/foods/{id}", a.updateFood)
 	mux.HandleFunc("PUT /api/foods/{id}/serving", a.updateFoodServing)
 	mux.HandleFunc("GET /api/entries", a.listEntries)
 	mux.HandleFunc("POST /api/entries", a.createEntry)
@@ -249,8 +250,8 @@ func (a *app) listFoods(w http.ResponseWriter, r *http.Request) {
 		       source, image_url, serving_configured
 		FROM foods
 		WHERE ? = '' OR name LIKE '%' || ? || '%' OR brand LIKE '%' || ? || '%' OR barcode = ?
-		ORDER BY CASE WHEN ? <> '' AND barcode = ? THEN 0 ELSE 1 END, name
-		LIMIT 30`, q, q, q, q, q, q)
+		ORDER BY CASE WHEN ? <> '' AND barcode = ? THEN 0 ELSE 1 END, name`,
+		q, q, q, q, q, q)
 	if err != nil {
 		writeError(w, 500, "Lebensmittel konnten nicht geladen werden")
 		return
@@ -404,6 +405,69 @@ func (a *app) insertFood(f food) (int64, error) {
 	return result.LastInsertId()
 }
 
+func (a *app) updateFood(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, http.StatusBadRequest, "Ungültige Lebensmittel-ID")
+		return
+	}
+	var f food
+	if err := decodeJSON(r, &f); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(f.Name) == "" {
+		writeError(w, http.StatusBadRequest, "Name ist erforderlich")
+		return
+	}
+	if f.ServingSize <= 0 || f.ServingSize > 10000 ||
+		math.IsNaN(f.ServingSize) || math.IsInf(f.ServingSize, 0) {
+		writeError(w, http.StatusBadRequest, "Die Standardmenge muss zwischen 0 und 10.000 g liegen")
+		return
+	}
+	if f.Micros == nil {
+		f.Micros = map[string]float64{}
+	}
+	for name, value := range f.Micros {
+		if strings.TrimSpace(name) == "" || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			writeError(w, http.StatusBadRequest, "Ungültiger Mikronährstoffwert")
+			return
+		}
+	}
+	micros, _ := json.Marshal(f.Micros)
+	result, err := a.db.Exec(`
+		UPDATE foods
+		SET name = ?, brand = ?, barcode = ?, serving_size = ?, serving_unit = 'g',
+		    calories = ?, protein = ?, carbs = ?, fat = ?, fiber = ?, sugar = ?,
+		    saturated_fat = ?, salt = ?, micros = ?, serving_configured = 1
+		WHERE id = ?`,
+		strings.TrimSpace(f.Name), strings.TrimSpace(f.Brand), strings.TrimSpace(f.Barcode),
+		f.ServingSize, nonNegative(f.Calories), nonNegative(f.Protein),
+		nonNegative(f.Carbs), nonNegative(f.Fat), nonNegative(f.Fiber),
+		nonNegative(f.Sugar), nonNegative(f.SaturatedFat), nonNegative(f.Salt),
+		string(micros), id,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			writeError(w, http.StatusConflict, "Dieser Barcode ist bereits einem anderen Lebensmittel zugeordnet")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Lebensmittel konnte nicht aktualisiert werden")
+		return
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "Lebensmittel nicht gefunden")
+		return
+	}
+	updated, err := a.foodByID(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Lebensmittel konnte nicht geladen werden")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
 func (a *app) updateFoodServing(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id < 1 {
@@ -498,7 +562,8 @@ func (a *app) listEntries(w http.ResponseWriter, r *http.Request) {
 		FROM entries e JOIN foods f ON f.id = e.food_id
 		WHERE e.entry_date = ?
 		ORDER BY CASE e.meal WHEN 'breakfast' THEN 1 WHEN 'lunch' THEN 2
-		             WHEN 'dinner' THEN 3 ELSE 4 END, e.created_at`, date)
+		             WHEN 'dinner' THEN 3 WHEN 'snack' THEN 4
+		             WHEN 'drinks' THEN 5 ELSE 6 END, e.created_at`, date)
 	if err != nil {
 		writeError(w, 500, "Einträge konnten nicht geladen werden")
 		return
@@ -545,7 +610,7 @@ func (a *app) createEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "Lebensmittel, Datum und eine gültige Menge sind erforderlich")
 		return
 	}
-	if !contains([]string{"breakfast", "lunch", "dinner", "snack"}, input.Meal) {
+	if !validMeal(input.Meal) {
 		writeError(w, 400, "Ungültige Mahlzeit")
 		return
 	}
@@ -583,7 +648,7 @@ func (a *app) updateEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Die Menge muss zwischen 0 und 10.000 g liegen")
 		return
 	}
-	if !contains([]string{"breakfast", "lunch", "dinner", "snack"}, input.Meal) {
+	if !validMeal(input.Meal) {
 		writeError(w, http.StatusBadRequest, "Ungültige Mahlzeit")
 		return
 	}
@@ -785,6 +850,10 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func validMeal(value string) bool {
+	return contains([]string{"breakfast", "lunch", "dinner", "snack", "drinks"}, value)
 }
 
 func normalizedQuantity(amount, quantity, unitAmount float64) (float64, float64) {

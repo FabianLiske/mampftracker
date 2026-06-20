@@ -21,7 +21,7 @@ export interface Food {
   needsServingSetup?: boolean
 }
 
-export type Meal = 'breakfast' | 'lunch' | 'dinner' | 'snack'
+export type Meal = 'breakfast' | 'lunch' | 'dinner' | 'snack' | 'drinks'
 
 export interface Entry {
   id: number
