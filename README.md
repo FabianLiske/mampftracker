@@ -1,267 +1,203 @@
-# MampfTracker
+# MampfTracker – Deployment
 
-Ein schlanker, selbst gehosteter Ernährungstracker für Kalorien, Makro- und
-Mikronährstoffe. Backend und Weboberfläche werden gemeinsam als einzelnes
-Container-Image ausgeliefert. Persönliche Daten und bekannte Lebensmittel
-liegen ausschließlich in einer lokalen SQLite-Datenbank.
-
-## Funktionen
-
-- Tagesprotokoll für Frühstück, Mittagessen, Abendessen, Snacks und Getränke
-- Tägliche Erfassung von Körpergewicht und Smartwatch-Verbrauch
-- Tagesmarkierung für unvollständig erfassten Intake
-- Gemeinsamer Verlauf für Kalorienaufnahme, Verbrauch und Gewicht mit frei wählbarem Zeitraum
-- Tagesziele für Kalorien, Protein, Kohlenhydrate, Fett und Ballaststoffe
-- Detailwerte für Zucker, gesättigte Fettsäuren, Salz und Mikronährstoffe
-- Manuell angelegte Lebensmittel inklusive Mikronährstoffen
-- Zentrale Übersicht und Bearbeitung aller bekannten Lebensmittel
-- Gespeicherte Standardmengen für Produkte und manuell angelegte Lebensmittel
-- Optionaler Anzahl-Multiplikator, beispielsweise `2 × 80 g` für zwei Brezeln
-- Barcode-Suche über Open Food Facts
-- Kamera-Scanner in Browsern mit `BarcodeDetector`-Unterstützung
-- Responsive Weboberfläche
-- Optionaler Zugriffsschutz über HTTP Basic Auth
-
-Open-Food-Facts-Daten sind Community-Daten und können unvollständig oder falsch
-sein. Datensätze von [Open Food Facts](https://world.openfoodfacts.org/) stehen
-unter der ODbL.
-
-## Produktdaten und lokaler Cache
-
-Ein Barcode wird nicht bei jeder Verwendung erneut extern abgefragt:
-
-1. MampfTracker sucht den Barcode zuerst in der lokalen SQLite-Datenbank.
-2. Ist das Produkt vorhanden, wird unmittelbar der lokale Datensatz verwendet.
-3. Nur unbekannte Barcodes werden bei Open Food Facts abgefragt.
-4. Ein erfolgreicher Treffer wird als vollständiges Lebensmittel lokal
-   gespeichert und steht danach auch ohne erneute API-Anfrage zur Verfügung.
-5. Beim ersten Eintragen legst du die gewünschte Grammzahl fest. Sie wird als
-   Standardmenge gespeichert und bei späteren Einträgen automatisch eingesetzt.
-
-Die Datenbank ist damit gleichzeitig Produktcache und Quelle für manuell
-angelegte Lebensmittel. Bereits gespeicherte Produkte werden derzeit nicht
-automatisch mit Open Food Facts synchronisiert oder überschrieben.
-
-Bei manuell angelegten Lebensmitteln wird die Standardmenge direkt zusammen mit
-den Nährwerten erfasst, beispielsweise 80 g für eine Brezel.
-
-Lokale Korrekturen an einem bestehenden Produkt sind im aktuellen Stand noch
-nicht über die Weboberfläche möglich. Die Datenstruktur ist dafür geeignet,
-aber ein Bearbeiten-/Aktualisieren-Endpunkt und die zugehörige UI fehlen noch.
-
-## Entwicklung
-
-Frontend installieren und starten:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-In einem zweiten Terminal das Backend starten:
-
-```bash
-go run ./cmd/server
-```
-
-Vite leitet `/api` automatisch an Port 8080 weiter. Die SQLite-Datei liegt dabei
-standardmäßig unter `./data/mampftracker.db`.
-
-Tests und Produktionsbuild:
-
-```bash
-go test ./...
-cd frontend && npm run build
-```
-
-## Container-Image
-
-Das Multi-Stage-Dockerfile baut zuerst das React-Frontend und bettet dessen
-statische Dateien anschließend in das Go-Binary ein:
-
-### GitHub Container Registry
-
-Pushes auf `master` bauen automatisch ein Multi-Arch-Image für `linux/amd64`
-und `linux/arm64` und veröffentlichen es unter:
+Container-Image:
 
 ```text
-ghcr.io/fabianliske/mampftracker
+ghcr.io/fabianliske/mampftracker:latest
 ```
 
-Dabei entstehen die Tags `latest` und `sha-<commit>`. Git-Tags wie `v1.2.3`
-erzeugen zusätzlich die Image-Tags `1.2.3` und `1.2`.
+Verfügbare Plattformen: `linux/amd64` und `linux/arm64`.
 
-Der Workflow kann außerdem über GitHub Actions manuell gestartet werden. Für
-den Push nach GHCR wird das automatisch bereitgestellte `GITHUB_TOKEN`
-verwendet; ein zusätzliches Registry-Secret ist nicht erforderlich.
+## Konfiguration
 
-### Lokal mit Docker Compose
+| Variable | Standard | Beschreibung |
+| --- | --- | --- |
+| `PORT` | `8080` | HTTP-Port |
+| `DATABASE_PATH` | `/data/mampftracker.db` | SQLite-Datenbank |
+| `TZ` | Systemzeitzone | Beispielsweise `Europe/Berlin` |
+| `OPENFOODFACTS_USER_AGENT` | MampfTracker-Kennung | Kennung für Open-Food-Facts-Anfragen |
+| `AUTH_USERNAME` | leer | Optionaler Benutzername für Basic Auth |
+| `AUTH_PASSWORD` | leer | Optionales Passwort für Basic Auth |
 
-Voraussetzung ist lediglich eine laufende Docker-Engine mit Docker Compose.
-Node.js, npm, Go und SQLite müssen lokal nicht installiert sein, da alle
-Build-Schritte im Container stattfinden.
+Persistente Daten liegen unter `/data`. Der Health-Endpunkt ist
+`GET /api/health` auf Port `8080`.
 
-Aus dem Repository-Hauptverzeichnis:
+## Standalone-Container
 
 ```bash
-docker compose up --build
+docker volume create mampftracker-data
+
+docker run -d \
+  --name mampftracker \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v mampftracker-data:/data \
+  -e TZ=Europe/Berlin \
+  -e 'OPENFOODFACTS_USER_AGENT=MampfTracker/0.1 (self-hosted; kontakt@example.com)' \
+  ghcr.io/fabianliske/mampftracker:latest
 ```
 
-Beim ersten Start werden die Node- und Go-Basisimages geladen, das Frontend
-gebaut, das Go-Binary kompiliert und der Container gestartet. Anschließend ist
-MampfTracker unter <http://localhost:8080> erreichbar.
-
-Die SQLite-Datenbank liegt im benannten Docker-Volume `mampftracker-data` und
-bleibt bei einem normalen Neustart oder Rebuild erhalten.
-
-Nützliche Befehle:
+Optional mit Basic Auth:
 
 ```bash
-# Im Hintergrund starten
+docker run -d \
+  --name mampftracker \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v mampftracker-data:/data \
+  -e AUTH_USERNAME=admin \
+  -e AUTH_PASSWORD=bitte-aendern \
+  ghcr.io/fabianliske/mampftracker:latest
+```
+
+## Docker Compose
+
+Die enthaltene `compose.yaml` baut das Image lokal:
+
+```bash
 docker compose up --build -d
-
-# Status und Healthcheck anzeigen
-docker compose ps
-
-# Logs verfolgen
 docker compose logs -f
+```
 
-# Container stoppen und entfernen, Daten behalten
+Stoppen, Daten behalten:
+
+```bash
 docker compose down
+```
 
-# Container UND lokale Datenbank löschen
+Stoppen und Volume löschen:
+
+```bash
 docker compose down -v
 ```
 
-Nach Codeänderungen genügt erneut:
-
-```bash
-docker compose up --build -d
-```
-
-Falls Port 8080 bereits belegt ist, kann in `compose.yaml` beispielsweise
-`"8081:8080"` eingetragen werden. Die Anwendung läuft dann unter
-<http://localhost:8081>.
-
-### Image direkt bauen
-
-Alternativ kann das Image ohne Compose gebaut werden:
-
-```bash
-docker build -t mampftracker:local .
-```
-
-Ein lokaler Testlauf:
-
-```bash
-docker run --rm \
-  -p 8080:8080 \
-  -v mampftracker-data:/data \
-  -e OPENFOODFACTS_USER_AGENT="MampfTracker/0.1 (self-hosted; kontakt@example.com)" \
-  mampftracker:local
-```
-
-Danach ist die Anwendung unter <http://localhost:8080> erreichbar.
-
-## Deployment-Vertrag für Flux/Kubernetes
-
-Dieses Repository enthält bewusst keine Kubernetes- oder Flux-Manifeste.
-Für das Deployment im separaten Flux-Repository gelten folgende Eckdaten.
-
-### Container
-
-| Eigenschaft | Wert |
-| --- | --- |
-| HTTP-Port | `8080` |
-| Container-Benutzer | UID/GID `10001` |
-| Persistentes Verzeichnis | `/data` |
-| Standard-Datenbank | `/data/mampftracker.db` |
-| Health-Endpunkt | `GET /api/health` |
-| Health-Erfolg | HTTP `200` mit `{"status":"ok"}` |
-| Benötigter Egress | HTTPS zu `world.openfoodfacts.org` |
-
-Der Container kann mit `readOnlyRootFilesystem: true` laufen, sofern `/data`
-schreibbar und `/tmp` beispielsweise über ein `emptyDir` verfügbar ist. Alle
-Linux-Capabilities können entfernt werden; Privilege Escalation ist nicht
-erforderlich.
-
-### Persistenz und Replikate
-
-- `/data` muss auf ein persistentes `ReadWriteOnce`-Volume gemountet werden.
-- SQLite erlaubt für diesen Anwendungsfall genau eine schreibende Instanz.
-- Deshalb `replicas: 1` und eine `Recreate`-Strategie verwenden.
-- Mehrere gleichzeitig laufende Pods oder Rolling Updates mit Überlappung
-  vermeiden.
-- 1 GiB Speicher ist für eine persönliche Instanz normalerweise mehr als
-  ausreichend.
-
-SQLite läuft im WAL-Modus. Für konsistente Backups sollte bevorzugt ein
-SQLite-Online-Backup verwendet werden. Bei dateibasierten Snapshots müssen die
-Datenbankdatei und eventuell vorhandene Dateien mit den Endungen `-wal` und
-`-shm` gemeinsam gesichert werden.
-
-### Probes
-
-Readiness- und Liveness-Probes können beide verwenden:
-
-```text
-GET /api/health
-Port 8080
-```
-
-Der Health-Endpunkt bleibt auch bei aktivierter Basic Auth ohne Anmeldung
-erreichbar.
-
-### Ressourcen
-
-Für eine persönliche Instanz sind folgende Startwerte angemessen:
+Für das GHCR-Image kann der Service stattdessen so definiert werden:
 
 ```yaml
-requests:
-  cpu: 20m
-  memory: 32Mi
-limits:
-  cpu: 500m
-  memory: 256Mi
+services:
+  mampftracker:
+    image: ghcr.io/fabianliske/mampftracker:latest
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Europe/Berlin
+      OPENFOODFACTS_USER_AGENT: "MampfTracker/0.1 (self-hosted)"
+    volumes:
+      - mampftracker-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  mampftracker-data:
 ```
 
-### Konfiguration
+## Kubernetes
 
-| Variable | Container-Standard | Beschreibung |
-| --- | --- | --- |
-| `PORT` | `8080` | HTTP-Port |
-| `DATABASE_PATH` | `/data/mampftracker.db` | Pfad zur SQLite-Datenbank |
-| `OPENFOODFACTS_USER_AGENT` | MampfTracker-Kennung | Kennung für externe API-Anfragen |
-| `TZ` | Systemzeitzone | Zeitzone des Containers, beispielsweise `Europe/Berlin` |
-| `AUTH_USERNAME` | leer | Optionaler Benutzername für HTTP Basic Auth |
-| `AUTH_PASSWORD` | leer | Optionales Passwort für HTTP Basic Auth |
+Wichtige Laufzeiteigenschaften:
 
-Basic Auth wird nur aktiviert, wenn Benutzername und Passwort gesetzt sind.
-Beide Werte sollten im Flux-Repository aus einem Secret kommen. Für den
-Open-Food-Facts-User-Agent sollte eine Kontaktadresse oder Projekt-URL angegeben
-werden.
+- genau ein Replica, da SQLite verwendet wird
+- Deployment-Strategie `Recreate`
+- persistentes `ReadWriteOnce`-Volume auf `/data`
+- Container-Port `8080`
+- Container läuft als UID/GID `10001`
+- Egress per HTTPS zu `world.openfoodfacts.org`
+- HTTPS am Ingress für den Kamera-Scanner
 
-### Ingress
+Beispiel:
 
-- Der Kamera-Scanner benötigt außerhalb von `localhost` HTTPS.
-- Es ist kein spezielles WebSocket- oder Session-Stickiness-Setup nötig.
-- Die Anwendung wird vollständig unter `/` ausgeliefert.
-- Bei öffentlicher Erreichbarkeit sollte mindestens die eingebaute Basic Auth
-  oder eine vorgeschaltete Authentifizierung verwendet werden.
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mampftracker-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mampftracker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mampftracker
+  template:
+    metadata:
+      labels:
+        app: mampftracker
+    spec:
+      imagePullSecrets:
+        - name: ghcr-cred
+      securityContext:
+        fsGroup: 10001
+      containers:
+        - name: mampftracker
+          image: ghcr.io/fabianliske/mampftracker:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DATABASE_PATH
+              value: /data/mampftracker.db
+            - name: TZ
+              value: Europe/Berlin
+            - name: OPENFOODFACTS_USER_AGENT
+              value: "MampfTracker/0.1 (self-hosted)"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mampftracker-data
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mampftracker
+spec:
+  selector:
+    app: mampftracker
+  ports:
+    - port: 80
+      targetPort: http
+```
 
-## HTTP-API
+Das Root-Dateisystem kann read-only sein, wenn `/data` und `/tmp` schreibbar
+gemountet werden.
 
-- `GET /api/foods?q=...`
-- `POST /api/foods`
-- `PUT /api/foods/{id}`
-- `PUT /api/foods/{id}/serving`
-- `GET /api/foods/barcode/{code}`
-- `GET /api/entries?date=YYYY-MM-DD`
-- `POST /api/entries`
-- `PUT /api/entries/{id}`
-- `DELETE /api/entries/{id}`
-- `GET|PUT /api/goals`
-- `GET|PUT /api/daily-stats`
-- `GET /api/history?from=YYYY-MM-DD&to=YYYY-MM-DD`
-- `GET /api/health`
+Für konsistente Backups sollte ein SQLite-Online-Backup oder ein
+Volume-Snapshot verwendet werden. Bei dateibasierten Backups müssen die
+Datenbank sowie gegebenenfalls vorhandene `-wal`- und `-shm`-Dateien gemeinsam
+gesichert werden.
