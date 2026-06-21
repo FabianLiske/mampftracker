@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log"
 	"math"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
@@ -111,6 +112,8 @@ type offNutriments struct {
 }
 
 func main() {
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+
 	dbPath := env("DATABASE_PATH", "./data/mampftracker.db")
 	if err := os.MkdirAll(path.Dir(dbPath), 0o755); err != nil {
 		log.Fatal(err)
@@ -891,6 +894,9 @@ func spaHandler() http.Handler {
 	}
 	files := http.FileServer(http.FS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sw.js" {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		if r.URL.Path != "/" {
 			if _, err := fs.Stat(sub, strings.TrimPrefix(path.Clean(r.URL.Path), "/")); err == nil {
 				files.ServeHTTP(w, r)
