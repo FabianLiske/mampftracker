@@ -46,6 +46,14 @@ function round(value: number, digits = 0) {
   return Math.round(value * factor) / factor
 }
 
+function signed(value: number, digits = 0) {
+  const rounded = round(value, digits)
+  if (rounded === 0) return '0'
+  return `${rounded > 0 ? '+' : '−'}${Math.abs(rounded).toLocaleString('de-DE', {
+    maximumFractionDigits: digits,
+  })}`
+}
+
 function DecimalInput({ value, onValueChange, decimals = 2, ...props }: {
   value: number
   onValueChange: (value: number) => void
@@ -350,41 +358,189 @@ function HistoryChart() {
       ) : calorieValues.length === 0 && weightValues.length === 0 ? (
         <div className="empty-chart"><TrendingUp /><strong>Noch nicht genug Daten</strong><span>Trage Mahlzeiten, Verbrauch oder Gewicht ein.</span></div>
       ) : (
+        <>
+          <div className="chart-wrap" onMouseLeave={() => setHovered(null)}>
+            <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label="Verlauf von Kalorien und Körpergewicht">
+              {calorieTicks.map(value => (
+                <g key={value}>
+                  <line className="chart-grid" x1={chartPadding.left} x2={chartWidth - chartPadding.right}
+                    y1={calorieY(value)} y2={calorieY(value)} />
+                  <text className="axis-label" x={chartPadding.left - 10} y={calorieY(value) + 4} textAnchor="end">{round(value)}</text>
+                </g>
+              ))}
+              {weightValues.length > 0 && [weightMin, (weightMin + weightMax) / 2, weightMax].map(value => (
+                <text className="axis-label weight-axis" key={value} x={chartWidth - chartPadding.right + 10}
+                  y={weightY(value) + 4}>{round(value, 1)} kg</text>
+              ))}
+              {dateTicks.map(index => (
+                <text className="axis-label" key={index} x={x(index)} y={chartHeight - 14} textAnchor="middle">
+                  {new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit' }).format(new Date(`${points[index].date}T12:00:00`))}
+                </text>
+              ))}
+              {segments(point => point.caloriesIn, calorieY).map((path, index) =>
+                <path key={`in-${index}`} className="chart-line calories-in" d={path} />)}
+              {segments(point => point.caloriesBurned, calorieY).map((path, index) =>
+                <path key={`out-${index}`} className="chart-line calories-out" d={path} />)}
+              {segments(point => point.weight, weightY).map((path, index) =>
+                <path key={`weight-${index}`} className="chart-line weight-line" d={path} />)}
+              {points.map((point, index) => (
+                <g key={`dots-${point.date}`}>
+                  {point.caloriesIn !== null && <circle className="chart-dot calories-in-dot" cx={x(index)} cy={calorieY(point.caloriesIn)} r="3" />}
+                  {point.caloriesBurned !== null && <circle className="chart-dot calories-out-dot" cx={x(index)} cy={calorieY(point.caloriesBurned)} r="3" />}
+                  {point.weight !== null && <circle className="chart-dot weight-dot" cx={x(index)} cy={weightY(point.weight)} r="3" />}
+                </g>
+              ))}
+              {points.map((point, index) => (
+                <rect key={point.date} className="chart-hit" x={x(index) - Math.max(innerWidth / points.length / 2, 3)}
+                  y={chartPadding.top} width={Math.max(innerWidth / points.length, 6)} height={innerHeight}
+                  onMouseEnter={() => setHovered(index)} />
+              ))}
+              {hovered !== null && <line className="hover-line" x1={x(hovered)} x2={x(hovered)}
+                y1={chartPadding.top} y2={chartPadding.top + innerHeight} />}
+            </svg>
+            {selectedPoint && (
+              <div className={`chart-tooltip ${hovered !== null && x(hovered) > chartWidth * .72 ? 'align-right' : ''}`}
+                style={{ left: `${x(hovered!) / chartWidth * 100}%` }}>
+                <strong>{new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(`${selectedPoint.date}T12:00:00`))}</strong>
+                <span>Rein: {selectedPoint.caloriesIn === null ? '–' : `${round(selectedPoint.caloriesIn)} kcal`}</span>
+                <span>Raus: {selectedPoint.caloriesBurned === null ? '–' : `${round(selectedPoint.caloriesBurned)} kcal`}</span>
+                <span>Gewicht: {selectedPoint.weight === null ? '–' : `${round(selectedPoint.weight, 1)} kg`}</span>
+                {selectedPoint.intakeIncomplete && (
+                  <span className="tooltip-warning"><CircleAlert size={12} /> Intake unvollständig</span>
+                )}
+              </div>
+            )}
+          </div>
+          <BalanceChart points={points} />
+        </>
+      )}
+    </section>
+  )
+}
+
+type BalancePoint = HistoryPoint & {
+  calorieBalance: number | null
+  weightChange: number | null
+}
+
+const balanceChartHeight = 300
+
+function BalanceChart({ points }: { points: HistoryPoint[] }) {
+  const [hovered, setHovered] = useState<number | null>(null)
+  const balancePoints: BalancePoint[] = points.map((point, index) => {
+    const previousWeight = index > 0 ? points[index - 1].weight : null
+    const weightChange = point.weight !== null && previousWeight !== null
+      ? round(point.weight - previousWeight, 2)
+      : null
+    return {
+      ...point,
+      calorieBalance: point.caloriesIn !== null && point.caloriesBurned !== null
+        ? point.caloriesIn - point.caloriesBurned
+        : null,
+      weightChange,
+    }
+  })
+  const calorieBalances = balancePoints.flatMap(point =>
+    point.calorieBalance === null ? [] : [point.calorieBalance])
+  const weightChanges = balancePoints.flatMap(point =>
+    point.weightChange === null ? [] : [point.weightChange])
+  const innerWidth = chartWidth - chartPadding.left - chartPadding.right
+  const innerHeight = balanceChartHeight - chartPadding.top - chartPadding.bottom
+  const calorieExtent = Math.max(500, Math.ceil(Math.max(...calorieBalances.map(Math.abs), 0) / 250) * 250)
+  const weightExtent = Math.max(.5, Math.ceil(Math.max(...weightChanges.map(Math.abs), 0) * 10) / 10)
+  const x = (index: number) => chartPadding.left +
+    (points.length <= 1 ? innerWidth / 2 : index / (points.length - 1) * innerWidth)
+  const calorieY = (value: number) => chartPadding.top + innerHeight / 2 - value / calorieExtent * innerHeight / 2
+  const weightY = (value: number) => chartPadding.top + innerHeight / 2 - value / weightExtent * innerHeight / 2
+  const dateTicks = points.length
+    ? Array.from(new Set([0, Math.floor((points.length - 1) / 2), points.length - 1]))
+    : []
+  const selectedPoint = hovered === null ? null : balancePoints[hovered]
+
+  const segments = (getValue: (point: BalancePoint) => number | null, getY: (value: number) => number) => {
+    const result: string[] = []
+    let current: string[] = []
+    balancePoints.forEach((point, index) => {
+      const value = getValue(point)
+      if (value === null) {
+        if (current.length) result.push(current.join(' '))
+        current = []
+      } else {
+        current.push(`${current.length ? 'L' : 'M'} ${x(index)} ${getY(value)}`)
+      }
+    })
+    if (current.length) result.push(current.join(' '))
+    return result
+  }
+
+  return (
+    <div className="balance-chart">
+      <div className="balance-chart-head">
+        <div>
+          <span>Tägliche Veränderung</span>
+          <h3>Bilanz & Gewichtsänderung</h3>
+        </div>
+        <small>Positive Bilanz = mehr rein als raus</small>
+      </div>
+      <div className="chart-legend balance-legend">
+        <span><i className="legend-balance" /> Energiebilanz</span>
+        <span><i className="legend-weight-change" /> Gewichtsänderung zum Vortag</span>
+      </div>
+      {calorieBalances.length === 0 && weightChanges.length === 0 ? (
+        <div className="empty-chart balance-empty">
+          <TrendingUp />
+          <strong>Noch nicht genug Vergleichsdaten</strong>
+          <span>Für die Bilanz werden Intake und Verbrauch am selben Tag benötigt.</span>
+        </div>
+      ) : (
         <div className="chart-wrap" onMouseLeave={() => setHovered(null)}>
-          <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label="Verlauf von Kalorien und Körpergewicht">
-            {calorieTicks.map(value => (
-              <g key={value}>
-                <line className="chart-grid" x1={chartPadding.left} x2={chartWidth - chartPadding.right}
-                  y1={calorieY(value)} y2={calorieY(value)} />
-                <text className="axis-label" x={chartPadding.left - 10} y={calorieY(value) + 4} textAnchor="end">{round(value)}</text>
-              </g>
-            ))}
-            {weightValues.length > 0 && [weightMin, (weightMin + weightMax) / 2, weightMax].map(value => (
-              <text className="axis-label weight-axis" key={value} x={chartWidth - chartPadding.right + 10}
-                y={weightY(value) + 4}>{round(value, 1)} kg</text>
-            ))}
+          <svg viewBox={`0 0 ${chartWidth} ${balanceChartHeight}`} role="img"
+            aria-label="Tägliche Energiebilanz und Gewichtsänderung">
+            {[-1, -.5, 0, .5, 1].map(ratio => {
+              const value = calorieExtent * ratio
+              return (
+                <g key={ratio}>
+                  <line className={ratio === 0 ? 'chart-zero' : 'chart-grid'}
+                    x1={chartPadding.left} x2={chartWidth - chartPadding.right}
+                    y1={calorieY(value)} y2={calorieY(value)} />
+                  <text className="axis-label balance-axis" x={chartPadding.left - 10}
+                    y={calorieY(value) + 4} textAnchor="end">{signed(value)}</text>
+                </g>
+              )
+            })}
+            {[-1, 0, 1].map(ratio => {
+              const value = weightExtent * ratio
+              return (
+                <text className="axis-label weight-axis" key={ratio}
+                  x={chartWidth - chartPadding.right + 10} y={weightY(value) + 4}>
+                  {signed(value, 1)} kg
+                </text>
+              )
+            })}
             {dateTicks.map(index => (
-              <text className="axis-label" key={index} x={x(index)} y={chartHeight - 14} textAnchor="middle">
-                {new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit' }).format(new Date(`${points[index].date}T12:00:00`))}
+              <text className="axis-label" key={index} x={x(index)}
+                y={balanceChartHeight - 14} textAnchor="middle">
+                {new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit' })
+                  .format(new Date(`${points[index].date}T12:00:00`))}
               </text>
             ))}
-            {segments(point => point.caloriesIn, calorieY).map((path, index) =>
-              <path key={`in-${index}`} className="chart-line calories-in" d={path} />)}
-            {segments(point => point.caloriesBurned, calorieY).map((path, index) =>
-              <path key={`out-${index}`} className="chart-line calories-out" d={path} />)}
-            {segments(point => point.weight, weightY).map((path, index) =>
-              <path key={`weight-${index}`} className="chart-line weight-line" d={path} />)}
-            {points.map((point, index) => (
-              <g key={`dots-${point.date}`}>
-                {point.caloriesIn !== null && <circle className="chart-dot calories-in-dot" cx={x(index)} cy={calorieY(point.caloriesIn)} r="3" />}
-                {point.caloriesBurned !== null && <circle className="chart-dot calories-out-dot" cx={x(index)} cy={calorieY(point.caloriesBurned)} r="3" />}
-                {point.weight !== null && <circle className="chart-dot weight-dot" cx={x(index)} cy={weightY(point.weight)} r="3" />}
+            {segments(point => point.calorieBalance, calorieY).map((path, index) =>
+              <path key={`balance-${index}`} className="chart-line balance-line" d={path} />)}
+            {segments(point => point.weightChange, weightY).map((path, index) =>
+              <path key={`weight-change-${index}`} className="chart-line weight-change-line" d={path} />)}
+            {balancePoints.map((point, index) => (
+              <g key={`balance-dots-${point.date}`}>
+                {point.calorieBalance !== null && <circle className="chart-dot balance-dot"
+                  cx={x(index)} cy={calorieY(point.calorieBalance)} r="3" />}
+                {point.weightChange !== null && <circle className="chart-dot weight-change-dot"
+                  cx={x(index)} cy={weightY(point.weightChange)} r="3" />}
               </g>
             ))}
-            {points.map((point, index) => (
-              <rect key={point.date} className="chart-hit" x={x(index) - Math.max(innerWidth / points.length / 2, 3)}
-                y={chartPadding.top} width={Math.max(innerWidth / points.length, 6)} height={innerHeight}
-                onMouseEnter={() => setHovered(index)} />
+            {balancePoints.map((point, index) => (
+              <rect key={point.date} className="chart-hit"
+                x={x(index) - Math.max(innerWidth / points.length / 2, 3)}
+                y={chartPadding.top} width={Math.max(innerWidth / points.length, 6)}
+                height={innerHeight} onMouseEnter={() => setHovered(index)} />
             ))}
             {hovered !== null && <line className="hover-line" x1={x(hovered)} x2={x(hovered)}
               y1={chartPadding.top} y2={chartPadding.top + innerHeight} />}
@@ -392,10 +548,15 @@ function HistoryChart() {
           {selectedPoint && (
             <div className={`chart-tooltip ${hovered !== null && x(hovered) > chartWidth * .72 ? 'align-right' : ''}`}
               style={{ left: `${x(hovered!) / chartWidth * 100}%` }}>
-              <strong>{new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(`${selectedPoint.date}T12:00:00`))}</strong>
-              <span>Rein: {selectedPoint.caloriesIn === null ? '–' : `${round(selectedPoint.caloriesIn)} kcal`}</span>
-              <span>Raus: {selectedPoint.caloriesBurned === null ? '–' : `${round(selectedPoint.caloriesBurned)} kcal`}</span>
-              <span>Gewicht: {selectedPoint.weight === null ? '–' : `${round(selectedPoint.weight, 1)} kg`}</span>
+              <strong>{new Intl.DateTimeFormat('de-DE', {
+                weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric',
+              }).format(new Date(`${selectedPoint.date}T12:00:00`))}</strong>
+              <span>Bilanz: {selectedPoint.calorieBalance === null
+                ? '–'
+                : `${signed(selectedPoint.calorieBalance)} kcal`}</span>
+              <span>Gewichtsänderung: {selectedPoint.weightChange === null
+                ? '–'
+                : `${signed(selectedPoint.weightChange, 1)} kg`}</span>
               {selectedPoint.intakeIncomplete && (
                 <span className="tooltip-warning"><CircleAlert size={12} /> Intake unvollständig</span>
               )}
@@ -403,7 +564,7 @@ function HistoryChart() {
           )}
         </div>
       )}
-    </section>
+    </div>
   )
 }
 

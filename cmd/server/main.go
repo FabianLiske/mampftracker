@@ -376,7 +376,7 @@ func (a *app) barcode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload.Status != 1 || payload.Product.Name == "" {
-		writeError(w, 404, "Produkt nicht gefunden – du kannst es manuell anlegen")
+		writeError(w, 404, "Produkt nicht gefunden - du kannst es manuell anlegen")
 		return
 	}
 
