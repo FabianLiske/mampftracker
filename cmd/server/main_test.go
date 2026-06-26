@@ -188,6 +188,72 @@ func TestUpdateEntry(t *testing.T) {
 	}
 }
 
+func TestCustomEntryRoundTrip(t *testing.T) {
+	a := &app{db: testDB(t)}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/entries",
+		bytes.NewBufferString(`{
+			"date":"2026-06-20","meal":"dinner","name":"Buffet",
+			"calories":1200,"protein":45.5,"carbs":150,"fat":42,
+			"fiber":8,"sugar":20,"saturatedFat":12,"salt":4.2,
+			"micros":{"Eisen":3.5}
+		}`),
+	)
+	response := httptest.NewRecorder()
+	a.createEntry(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected created, got %d: %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/entries?date=2026-06-20", nil)
+	response = httptest.NewRecorder()
+	a.listEntries(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected success, got %d: %s", response.Code, response.Body.String())
+	}
+	var entries []entry
+	if err := json.NewDecoder(response.Body).Decode(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one entry, got %d", len(entries))
+	}
+	got := entries[0]
+	if got.FoodID != nil || !got.IsCustom || got.Food.Name != "Buffet" ||
+		got.Food.Calories != 1200 || got.Food.Micros["Eisen"] != 3.5 {
+		t.Fatalf("unexpected custom entry: %#v", got)
+	}
+
+	request = httptest.NewRequest(
+		http.MethodPut,
+		"/api/entries/1",
+		bytes.NewBufferString(`{
+			"meal":"lunch","name":"Brunch-Buffet",
+			"calories":900,"protein":35,"carbs":100,"fat":30,
+			"fiber":7,"sugar":16,"saturatedFat":8,"salt":3,
+			"micros":{"Eisen":2}
+		}`),
+	)
+	request.SetPathValue("id", strconv.FormatInt(got.ID, 10))
+	response = httptest.NewRecorder()
+	a.updateEntry(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected no content, got %d: %s", response.Code, response.Body.String())
+	}
+	var name, meal string
+	var calories float64
+	if err := a.db.QueryRow(
+		`SELECT meal, custom_name, custom_calories FROM entries WHERE id = ?`,
+		got.ID,
+	).Scan(&meal, &name, &calories); err != nil {
+		t.Fatal(err)
+	}
+	if meal != "lunch" || name != "Brunch-Buffet" || calories != 900 {
+		t.Fatalf("unexpected updated custom entry: meal=%s name=%s calories=%v", meal, name, calories)
+	}
+}
+
 func TestUpdateFoodAffectsExistingEntries(t *testing.T) {
 	a := &app{db: testDB(t)}
 	foodID, err := a.insertFood(food{
@@ -298,6 +364,13 @@ func TestHistoryIncludesRangeAndGaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := a.db.Exec(
+		`INSERT INTO entries(food_id, entry_date, meal, amount, custom_name, custom_calories)
+		 VALUES (NULL, ?, ?, 100, ?, ?)`,
+		"2026-06-19", "snack", "Freier Test", 300,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(
 		`INSERT INTO daily_stats(entry_date, weight, calories_burned) VALUES (?, ?, ?)`,
 		"2026-06-20", 81.5, 2600,
 	); err != nil {
@@ -324,8 +397,8 @@ func TestHistoryIncludesRangeAndGaps(t *testing.T) {
 	if points[0].CaloriesIn != nil || points[0].Weight != nil {
 		t.Fatalf("expected an empty first day: %#v", points[0])
 	}
-	if points[1].CaloriesIn == nil || *points[1].CaloriesIn != 1000 {
-		t.Fatalf("expected 1000 kcal intake: %#v", points[1])
+	if points[1].CaloriesIn == nil || *points[1].CaloriesIn != 1300 {
+		t.Fatalf("expected 1300 kcal intake: %#v", points[1])
 	}
 	if points[2].Weight == nil || *points[2].Weight != 81.5 ||
 		points[2].CaloriesBurned == nil || *points[2].CaloriesBurned != 2600 {

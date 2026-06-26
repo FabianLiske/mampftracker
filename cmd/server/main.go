@@ -57,12 +57,13 @@ type food struct {
 
 type entry struct {
 	ID         int64   `json:"id"`
-	FoodID     int64   `json:"foodId"`
+	FoodID     *int64  `json:"foodId"`
 	Date       string  `json:"date"`
 	Meal       string  `json:"meal"`
 	Amount     float64 `json:"amount"`
 	Quantity   float64 `json:"quantity"`
 	UnitAmount float64 `json:"unitAmount"`
+	IsCustom   bool    `json:"isCustom"`
 	Food       food    `json:"food"`
 	CreatedAt  string  `json:"createdAt"`
 }
@@ -203,12 +204,22 @@ func migrate(db *sql.DB) error {
 
 		CREATE TABLE IF NOT EXISTS entries (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			food_id INTEGER NOT NULL REFERENCES foods(id) ON DELETE RESTRICT,
+			food_id INTEGER REFERENCES foods(id) ON DELETE RESTRICT,
 			entry_date TEXT NOT NULL,
 			meal TEXT NOT NULL,
 			amount REAL NOT NULL CHECK(amount > 0),
 			quantity REAL NOT NULL DEFAULT 1,
 			unit_amount REAL,
+			custom_name TEXT NOT NULL DEFAULT '',
+			custom_calories REAL NOT NULL DEFAULT 0,
+			custom_protein REAL NOT NULL DEFAULT 0,
+			custom_carbs REAL NOT NULL DEFAULT 0,
+			custom_fat REAL NOT NULL DEFAULT 0,
+			custom_fiber REAL NOT NULL DEFAULT 0,
+			custom_sugar REAL NOT NULL DEFAULT 0,
+			custom_saturated_fat REAL NOT NULL DEFAULT 0,
+			custom_salt REAL NOT NULL DEFAULT 0,
+			custom_micros TEXT NOT NULL DEFAULT '{}',
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS entries_date ON entries(entry_date);
@@ -238,12 +249,25 @@ func migrate(db *sql.DB) error {
 	for _, migration := range []string{
 		`ALTER TABLE entries ADD COLUMN quantity REAL NOT NULL DEFAULT 1`,
 		`ALTER TABLE entries ADD COLUMN unit_amount REAL`,
+		`ALTER TABLE entries ADD COLUMN custom_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE entries ADD COLUMN custom_calories REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE entries ADD COLUMN custom_protein REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE entries ADD COLUMN custom_carbs REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE entries ADD COLUMN custom_fat REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE entries ADD COLUMN custom_fiber REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE entries ADD COLUMN custom_sugar REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE entries ADD COLUMN custom_saturated_fat REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE entries ADD COLUMN custom_salt REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE entries ADD COLUMN custom_micros TEXT NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE daily_stats ADD COLUMN intake_incomplete INTEGER NOT NULL DEFAULT 0`,
 	} {
 		_, err = db.Exec(migration)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err
 		}
+	}
+	if err := ensureEntriesAllowCustom(db); err != nil {
+		return err
 	}
 	_, err = db.Exec(`
 		UPDATE entries
@@ -261,6 +285,94 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	return nil
+}
+
+func ensureEntriesAllowCustom(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(entries)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	foodIDNotNull := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == "food_id" {
+			foodIDNotNull = notNull == 1
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !foodIDNotNull {
+		return nil
+	}
+
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	defer db.Exec(`PRAGMA foreign_keys = ON`)
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`ALTER TABLE entries RENAME TO entries_old`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		CREATE TABLE entries (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			food_id INTEGER REFERENCES foods(id) ON DELETE RESTRICT,
+			entry_date TEXT NOT NULL,
+			meal TEXT NOT NULL,
+			amount REAL NOT NULL CHECK(amount > 0),
+			quantity REAL NOT NULL DEFAULT 1,
+			unit_amount REAL,
+			custom_name TEXT NOT NULL DEFAULT '',
+			custom_calories REAL NOT NULL DEFAULT 0,
+			custom_protein REAL NOT NULL DEFAULT 0,
+			custom_carbs REAL NOT NULL DEFAULT 0,
+			custom_fat REAL NOT NULL DEFAULT 0,
+			custom_fiber REAL NOT NULL DEFAULT 0,
+			custom_sugar REAL NOT NULL DEFAULT 0,
+			custom_saturated_fat REAL NOT NULL DEFAULT 0,
+			custom_salt REAL NOT NULL DEFAULT 0,
+			custom_micros TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO entries(
+			id, food_id, entry_date, meal, amount, quantity, unit_amount,
+			custom_name, custom_calories, custom_protein, custom_carbs, custom_fat,
+			custom_fiber, custom_sugar, custom_saturated_fat, custom_salt,
+			custom_micros, created_at
+		)
+		SELECT id, food_id, entry_date, meal, amount, quantity, unit_amount,
+		       custom_name, custom_calories, custom_protein, custom_carbs, custom_fat,
+		       custom_fiber, custom_sugar, custom_saturated_fat, custom_salt,
+		       custom_micros, created_at
+		FROM entries_old`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE entries_old`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS entries_date ON entries(entry_date)`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *app) health(w http.ResponseWriter, _ *http.Request) {
@@ -584,11 +696,26 @@ func (a *app) listEntries(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(`
 		SELECT e.id, e.food_id, e.entry_date, e.meal, e.amount,
 		       e.quantity, COALESCE(e.unit_amount, e.amount), e.created_at,
-		       f.id, f.name, f.brand, f.barcode, f.serving_size, f.serving_unit,
-		       f.calories, f.protein, f.carbs, f.fat, f.fiber, f.sugar,
-		       f.saturated_fat, f.salt, f.micros, f.source, f.image_url,
-		       f.serving_configured
-		FROM entries e JOIN foods f ON f.id = e.food_id
+		       e.food_id IS NULL,
+		       COALESCE(f.id, 0),
+		       CASE WHEN e.food_id IS NULL THEN e.custom_name ELSE f.name END,
+		       COALESCE(f.brand, ''),
+		       COALESCE(f.barcode, ''),
+		       CASE WHEN e.food_id IS NULL THEN 100 ELSE f.serving_size END,
+		       COALESCE(f.serving_unit, 'g'),
+		       CASE WHEN e.food_id IS NULL THEN e.custom_calories ELSE f.calories END,
+		       CASE WHEN e.food_id IS NULL THEN e.custom_protein ELSE f.protein END,
+		       CASE WHEN e.food_id IS NULL THEN e.custom_carbs ELSE f.carbs END,
+		       CASE WHEN e.food_id IS NULL THEN e.custom_fat ELSE f.fat END,
+		       CASE WHEN e.food_id IS NULL THEN e.custom_fiber ELSE f.fiber END,
+		       CASE WHEN e.food_id IS NULL THEN e.custom_sugar ELSE f.sugar END,
+		       CASE WHEN e.food_id IS NULL THEN e.custom_saturated_fat ELSE f.saturated_fat END,
+		       CASE WHEN e.food_id IS NULL THEN e.custom_salt ELSE f.salt END,
+		       CASE WHEN e.food_id IS NULL THEN e.custom_micros ELSE f.micros END,
+		       CASE WHEN e.food_id IS NULL THEN 'quick' ELSE f.source END,
+		       COALESCE(f.image_url, ''),
+		       COALESCE(f.serving_configured, 1)
+		FROM entries e LEFT JOIN foods f ON f.id = e.food_id
 		WHERE e.entry_date = ?
 		ORDER BY CASE e.meal WHEN 'breakfast' THEN 1 WHEN 'lunch' THEN 2
 		             WHEN 'dinner' THEN 3 WHEN 'snack' THEN 4
@@ -601,10 +728,11 @@ func (a *app) listEntries(w http.ResponseWriter, r *http.Request) {
 	items := make([]entry, 0)
 	for rows.Next() {
 		var e entry
+		var foodID sql.NullInt64
 		var micros string
 		var servingConfigured bool
-		err := rows.Scan(&e.ID, &e.FoodID, &e.Date, &e.Meal, &e.Amount,
-			&e.Quantity, &e.UnitAmount, &e.CreatedAt,
+		err := rows.Scan(&e.ID, &foodID, &e.Date, &e.Meal, &e.Amount,
+			&e.Quantity, &e.UnitAmount, &e.CreatedAt, &e.IsCustom,
 			&e.Food.ID, &e.Food.Name, &e.Food.Brand, &e.Food.Barcode,
 			&e.Food.ServingSize, &e.Food.ServingUnit, &e.Food.Calories,
 			&e.Food.Protein, &e.Food.Carbs, &e.Food.Fat, &e.Food.Fiber,
@@ -613,6 +741,10 @@ func (a *app) listEntries(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, 500, "Einträge konnten nicht gelesen werden")
 			return
+		}
+		if foodID.Valid {
+			id := foodID.Int64
+			e.FoodID = &id
 		}
 		e.Food.Micros = map[string]float64{}
 		_ = json.Unmarshal([]byte(micros), &e.Food.Micros)
@@ -624,30 +756,88 @@ func (a *app) listEntries(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) createEntry(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		FoodID     int64   `json:"foodId"`
-		Date       string  `json:"date"`
-		Meal       string  `json:"meal"`
-		Amount     float64 `json:"amount"`
-		Quantity   float64 `json:"quantity"`
-		UnitAmount float64 `json:"unitAmount"`
+		FoodID       *int64             `json:"foodId"`
+		Date         string             `json:"date"`
+		Meal         string             `json:"meal"`
+		Amount       float64            `json:"amount"`
+		Quantity     float64            `json:"quantity"`
+		UnitAmount   float64            `json:"unitAmount"`
+		Name         string             `json:"name"`
+		Calories     float64            `json:"calories"`
+		Protein      float64            `json:"protein"`
+		Carbs        float64            `json:"carbs"`
+		Fat          float64            `json:"fat"`
+		Fiber        float64            `json:"fiber"`
+		Sugar        float64            `json:"sugar"`
+		SaturatedFat float64            `json:"saturatedFat"`
+		Salt         float64            `json:"salt"`
+		Micros       map[string]float64 `json:"micros"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
-	if input.FoodID < 1 || !validDate(input.Date) || input.Amount <= 0 || input.Amount > 10000 {
-		writeError(w, 400, "Lebensmittel, Datum und eine gültige Menge sind erforderlich")
+	if !validDate(input.Date) {
+		writeError(w, 400, "Datum muss YYYY-MM-DD entsprechen")
 		return
 	}
 	if !validMeal(input.Meal) {
 		writeError(w, 400, "Ungültige Mahlzeit")
 		return
 	}
+	if input.FoodID == nil {
+		f := food{
+			Name:         input.Name,
+			ServingSize:  100,
+			ServingUnit:  "g",
+			Calories:     input.Calories,
+			Protein:      input.Protein,
+			Carbs:        input.Carbs,
+			Fat:          input.Fat,
+			Fiber:        input.Fiber,
+			Sugar:        input.Sugar,
+			SaturatedFat: input.SaturatedFat,
+			Salt:         input.Salt,
+			Micros:       input.Micros,
+			Source:       "quick",
+		}
+		if err := validateCustomEntryFood(f); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		if f.Micros == nil {
+			f.Micros = map[string]float64{}
+		}
+		micros, _ := json.Marshal(f.Micros)
+		result, err := a.db.Exec(`
+			INSERT INTO entries(
+				food_id, entry_date, meal, amount, quantity, unit_amount,
+				custom_name, custom_calories, custom_protein, custom_carbs, custom_fat,
+				custom_fiber, custom_sugar, custom_saturated_fat, custom_salt, custom_micros
+			)
+			VALUES (NULL, ?, ?, 100, 1, 100, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			input.Date, input.Meal, strings.TrimSpace(f.Name),
+			nonNegative(f.Calories), nonNegative(f.Protein), nonNegative(f.Carbs),
+			nonNegative(f.Fat), nonNegative(f.Fiber), nonNegative(f.Sugar),
+			nonNegative(f.SaturatedFat), nonNegative(f.Salt), string(micros),
+		)
+		if err != nil {
+			writeError(w, 500, "Freier Eintrag konnte nicht gespeichert werden")
+			return
+		}
+		id, _ := result.LastInsertId()
+		writeJSON(w, 201, map[string]int64{"id": id})
+		return
+	}
+	if *input.FoodID < 1 || input.Amount <= 0 || input.Amount > 10000 {
+		writeError(w, 400, "Lebensmittel und eine gültige Menge sind erforderlich")
+		return
+	}
 	input.Quantity, input.UnitAmount = normalizedQuantity(input.Amount, input.Quantity, input.UnitAmount)
 	result, err := a.db.Exec(
 		`INSERT INTO entries(food_id, entry_date, meal, amount, quantity, unit_amount)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		input.FoodID, input.Date, input.Meal, input.Amount, input.Quantity, input.UnitAmount)
+		*input.FoodID, input.Date, input.Meal, input.Amount, input.Quantity, input.UnitAmount)
 	if err != nil {
 		writeError(w, 400, "Eintrag konnte nicht gespeichert werden")
 		return
@@ -663,22 +853,87 @@ func (a *app) updateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Meal       string  `json:"meal"`
-		Amount     float64 `json:"amount"`
-		Quantity   float64 `json:"quantity"`
-		UnitAmount float64 `json:"unitAmount"`
+		Meal         string             `json:"meal"`
+		Amount       float64            `json:"amount"`
+		Quantity     float64            `json:"quantity"`
+		UnitAmount   float64            `json:"unitAmount"`
+		Name         string             `json:"name"`
+		Calories     float64            `json:"calories"`
+		Protein      float64            `json:"protein"`
+		Carbs        float64            `json:"carbs"`
+		Fat          float64            `json:"fat"`
+		Fiber        float64            `json:"fiber"`
+		Sugar        float64            `json:"sugar"`
+		SaturatedFat float64            `json:"saturatedFat"`
+		Salt         float64            `json:"salt"`
+		Micros       map[string]float64 `json:"micros"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !validMeal(input.Meal) {
+		writeError(w, http.StatusBadRequest, "Ungültige Mahlzeit")
+		return
+	}
+
+	var foodID sql.NullInt64
+	if err := a.db.QueryRow(`SELECT food_id FROM entries WHERE id = ?`, id).Scan(&foodID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "Eintrag nicht gefunden")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Eintrag konnte nicht geladen werden")
+		return
+	}
+	if !foodID.Valid {
+		f := food{
+			Name:         input.Name,
+			Calories:     input.Calories,
+			Protein:      input.Protein,
+			Carbs:        input.Carbs,
+			Fat:          input.Fat,
+			Fiber:        input.Fiber,
+			Sugar:        input.Sugar,
+			SaturatedFat: input.SaturatedFat,
+			Salt:         input.Salt,
+			Micros:       input.Micros,
+		}
+		if err := validateCustomEntryFood(f); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if f.Micros == nil {
+			f.Micros = map[string]float64{}
+		}
+		micros, _ := json.Marshal(f.Micros)
+		result, err := a.db.Exec(`
+			UPDATE entries
+			SET meal = ?, custom_name = ?, custom_calories = ?, custom_protein = ?,
+			    custom_carbs = ?, custom_fat = ?, custom_fiber = ?, custom_sugar = ?,
+			    custom_saturated_fat = ?, custom_salt = ?, custom_micros = ?
+			WHERE id = ?`,
+			input.Meal, strings.TrimSpace(f.Name), nonNegative(f.Calories),
+			nonNegative(f.Protein), nonNegative(f.Carbs), nonNegative(f.Fat),
+			nonNegative(f.Fiber), nonNegative(f.Sugar), nonNegative(f.SaturatedFat),
+			nonNegative(f.Salt), string(micros), id,
+		)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Eintrag konnte nicht aktualisiert werden")
+			return
+		}
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			writeError(w, http.StatusNotFound, "Eintrag nicht gefunden")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	if input.Amount <= 0 || input.Amount > 10000 ||
 		math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) {
 		writeError(w, http.StatusBadRequest, "Die Menge muss zwischen 0 und 10.000 g liegen")
-		return
-	}
-	if !validMeal(input.Meal) {
-		writeError(w, http.StatusBadRequest, "Ungültige Mahlzeit")
 		return
 	}
 	input.Quantity, input.UnitAmount = normalizedQuantity(input.Amount, input.Quantity, input.UnitAmount)
@@ -830,29 +1085,34 @@ func (a *app) getHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := a.db.Query(`
+		WITH entry_totals AS (
+			SELECT e.entry_date,
+			       SUM(CASE
+			           WHEN e.food_id IS NULL THEN e.custom_calories
+			           ELSE e.amount / 100.0 * f.calories
+			       END) AS calories_in
+			FROM entries e
+			LEFT JOIN foods f ON f.id = e.food_id
+			WHERE e.entry_date BETWEEN ? AND ?
+			GROUP BY e.entry_date
+		)
 		SELECT d.entry_date AS entry_date,
-		       CASE WHEN COUNT(e.id) > 0
-		            THEN SUM(e.amount / 100.0 * f.calories)
-		            ELSE NULL END AS calories_in,
+		       et.calories_in,
 		       d.weight,
 		       d.calories_burned,
 		       d.intake_incomplete
 		FROM daily_stats d
-		LEFT JOIN entries e ON e.entry_date = d.entry_date
-		LEFT JOIN foods f ON f.id = e.food_id
+		LEFT JOIN entry_totals et ON et.entry_date = d.entry_date
 		WHERE d.entry_date BETWEEN ? AND ?
-		GROUP BY d.entry_date, d.weight, d.calories_burned, d.intake_incomplete
 		UNION
-		SELECT e.entry_date AS entry_date,
-		       SUM(e.amount / 100.0 * f.calories) AS calories_in,
+		SELECT et.entry_date AS entry_date,
+		       et.calories_in,
 		       NULL AS weight,
 		       NULL AS calories_burned,
 		       0 AS intake_incomplete
-		FROM entries e
-		JOIN foods f ON f.id = e.food_id
-		LEFT JOIN daily_stats d ON d.entry_date = e.entry_date
-		WHERE e.entry_date BETWEEN ? AND ? AND d.entry_date IS NULL
-		GROUP BY e.entry_date
+		FROM entry_totals et
+		LEFT JOIN daily_stats d ON d.entry_date = et.entry_date
+		WHERE d.entry_date IS NULL
 		ORDER BY entry_date`,
 		from, to, from, to,
 	)
@@ -1013,6 +1273,44 @@ func nonNegative(value float64) float64 {
 		return 0
 	}
 	return value
+}
+
+func validateCustomEntryFood(f food) error {
+	if strings.TrimSpace(f.Name) == "" {
+		return errors.New("Name ist erforderlich")
+	}
+	if !validNutrientValue(f.Calories, 20000) {
+		return errors.New("Kalorien müssen zwischen 0 und 20.000 liegen")
+	}
+	for _, item := range []struct {
+		label string
+		value float64
+	}{
+		{"Protein", f.Protein},
+		{"Kohlenhydrate", f.Carbs},
+		{"Fett", f.Fat},
+		{"Ballaststoffe", f.Fiber},
+		{"Zucker", f.Sugar},
+		{"Gesättigte Fettsäuren", f.SaturatedFat},
+		{"Salz", f.Salt},
+	} {
+		if !validNutrientValue(item.value, 10000) {
+			return fmt.Errorf("%s muss zwischen 0 und 10.000 liegen", item.label)
+		}
+	}
+	if f.Micros == nil {
+		return nil
+	}
+	for name, value := range f.Micros {
+		if strings.TrimSpace(name) == "" || !validNutrientValue(value, 100000) {
+			return errors.New("Ungültiger Mikronährstoffwert")
+		}
+	}
+	return nil
+}
+
+func validNutrientValue(value, max float64) bool {
+	return value >= 0 && value <= max && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func contains(values []string, target string) bool {

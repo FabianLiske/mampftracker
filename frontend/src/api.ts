@@ -1,4 +1,4 @@
-import type { DailyStats, Entry, Food, Goals, HistoryPoint, Meal } from './types'
+import type { CustomEntryInput, DailyStats, Entry, Food, Goals, HistoryPoint, Meal } from './types'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -40,10 +40,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ foodId, date, meal, amount, quantity, unitAmount }),
     }),
+  createCustomEntry: (date: string, meal: Meal, entry: CustomEntryInput) =>
+    request<{ id: number }>('/api/entries', {
+      method: 'POST',
+      body: JSON.stringify({ date, meal, ...entry }),
+    }),
   updateEntry: (id: number, meal: Meal, amount: number, quantity: number, unitAmount: number) =>
     request<void>(`/api/entries/${id}`, {
       method: 'PUT',
       body: JSON.stringify({ meal, amount, quantity, unitAmount }),
+    }),
+  updateCustomEntry: (id: number, meal: Meal, entry: CustomEntryInput) =>
+    request<void>(`/api/entries/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ meal, ...entry }),
     }),
   deleteEntry: (id: number) =>
     request<void>(`/api/entries/${id}`, { method: 'DELETE' }),

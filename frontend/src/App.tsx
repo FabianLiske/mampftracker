@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 import {
   Activity, Barcode, BookOpen, ChevronLeft, ChevronRight, CircleAlert, CirclePlus, Flame, Leaf,
   LoaderCircle, Minus, PencilLine, Plus, Save, Scale, ScanLine, Settings2,
   Trash2, TrendingUp, X,
 } from 'lucide-react'
 import { api } from './api'
-import type { DailyStats, Entry, Food, Goals, HistoryPoint, Meal, Totals } from './types'
+import type { CustomEntryInput, DailyStats, Entry, Food, Goals, HistoryPoint, Meal, Totals } from './types'
 
 const meals: { id: Meal; label: string; icon: string }[] = [
   { id: 'breakfast', label: 'Frühstück', icon: '☀️' },
@@ -16,6 +16,16 @@ const meals: { id: Meal; label: string; icon: string }[] = [
 ]
 
 const emptyGoals: Goals = { calories: 2200, protein: 140, carbs: 250, fat: 70, fiber: 30 }
+const customEntryFields = [
+  ['calories', 'Kalorien', 'kcal', 0],
+  ['protein', 'Protein', 'g', 1],
+  ['carbs', 'Kohlenhydrate', 'g', 1],
+  ['fat', 'Fett', 'g', 1],
+  ['fiber', 'Ballaststoffe', 'g', 1],
+  ['sugar', 'Zucker', 'g', 1],
+  ['saturatedFat', 'Gesättigte Fettsäuren', 'g', 1],
+  ['salt', 'Salz', 'g', 2],
+] as const
 
 function localDate(date = new Date()) {
   const offset = date.getTimezoneOffset()
@@ -98,6 +108,7 @@ function DecimalInput({ value, onValueChange, decimals = 2, ...props }: {
 }
 
 function entryAmountLabel(entry: Entry) {
+  if (entry.isCustom) return 'freier Eintrag'
   const wholeQuantity = Math.round(entry.quantity)
   if (wholeQuantity > 1 && Math.abs(entry.quantity - wholeQuantity) < 0.001) {
     return `${wholeQuantity} × ${round(entry.unitAmount, 1)} g = ${round(entry.amount, 1)} g`
@@ -249,10 +260,9 @@ export default function App() {
         <EditEntryDialog
           entry={editingEntry}
           onClose={() => setEditingEntry(null)}
-          onSaved={(meal, amount, quantity, unitAmount) => {
-            setEntries(current => current.map(entry =>
-              entry.id === editingEntry.id ? { ...entry, meal, amount, quantity, unitAmount } : entry))
+          onSaved={async () => {
             setEditingEntry(null)
+            await load()
           }}
         />
       )}
@@ -863,7 +873,7 @@ function MealSection({ meal, entries, onAdd, onEdit, onDelete }: {
               </div>
               <div className="entry-name">
                 <strong>{entry.food.name}</strong>
-                <span>{entry.food.brand || 'Eigenes Lebensmittel'} · {entryAmountLabel(entry)}</span>
+                <span>{entry.isCustom ? 'Freier Eintrag' : entry.food.brand || 'Eigenes Lebensmittel'} · {entryAmountLabel(entry)}</span>
               </div>
               <div className="entry-nutrition">
                 <strong>{round(entry.food.calories * entry.amount / 100)} kcal</strong>
@@ -881,25 +891,81 @@ function MealSection({ meal, entries, onAdd, onEdit, onDelete }: {
   )
 }
 
+function CustomEntryFields({ custom, setCustom, setCustomValue, autoFocus = false }: {
+  custom: CustomEntryInput
+  setCustom: Dispatch<SetStateAction<CustomEntryInput>>
+  setCustomValue: <K extends keyof Omit<CustomEntryInput, 'micros'>>(key: K, value: CustomEntryInput[K]) => void
+  autoFocus?: boolean
+}) {
+  return (
+    <div className="field-grid">
+      <label className="field wide"><span>Name *</span>
+        <input autoFocus={autoFocus} required value={custom.name}
+          onChange={event => setCustomValue('name', event.target.value)} />
+      </label>
+      <div className="form-divider wide">Gesamtwerte für diesen Eintrag</div>
+      {customEntryFields.map(([key, label, unit, decimals]) => (
+        <label className="field" key={key}><span>{label} ({unit})</span>
+          <DecimalInput value={custom[key]} decimals={decimals}
+            onValueChange={value => setCustomValue(key, value)} />
+        </label>
+      ))}
+      <div className="form-divider wide">Optionale Mikronährstoffe gesamt (mg)</div>
+      {editableMicros.map(name => (
+        <label className="field" key={name}><span>{name} (mg)</span>
+          <DecimalInput value={custom.micros[name] || 0} decimals={3}
+            onValueChange={value => setCustom(current => ({
+              ...current,
+              micros: { ...current.micros, [name]: value },
+            }))} />
+        </label>
+      ))}
+    </div>
+  )
+}
+
 function EditEntryDialog({ entry, onClose, onSaved }: {
   entry: Entry
   onClose: () => void
-  onSaved: (meal: Meal, amount: number, quantity: number, unitAmount: number) => void
+  onSaved: () => void
 }) {
   const [meal, setMeal] = useState<Meal>(entry.meal)
   const [amount, setAmount] = useState(entry.amount)
+  const [custom, setCustom] = useState<CustomEntryInput>(() => ({
+    name: entry.food.name,
+    calories: entry.food.calories,
+    protein: entry.food.protein,
+    carbs: entry.food.carbs,
+    fat: entry.food.fat,
+    fiber: entry.food.fiber,
+    sugar: entry.food.sugar,
+    saturatedFat: entry.food.saturatedFat,
+    salt: entry.food.salt,
+    micros: Object.fromEntries(editableMicros.map(name => [name, entry.food.micros?.[name] || 0])),
+  }))
   const unitAmount = entry.unitAmount || entry.food.servingSize || entry.amount
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const setCustomValue = <K extends keyof Omit<CustomEntryInput, 'micros'>>(key: K, value: CustomEntryInput[K]) =>
+    setCustom(current => ({ ...current, [key]: value }))
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (amount <= 0) return
+    if (!entry.isCustom && amount <= 0) return
     setBusy(true); setError('')
     try {
+      if (entry.isCustom) {
+        await api.updateCustomEntry(entry.id, meal, {
+          ...custom,
+          name: custom.name.trim(),
+          micros: Object.fromEntries(Object.entries(custom.micros).filter(([, value]) => value > 0)),
+        })
+        onSaved()
+        return
+      }
       const quantity = amount / unitAmount
       await api.updateEntry(entry.id, meal, amount, quantity, unitAmount)
-      onSaved(meal, amount, quantity, unitAmount)
+      onSaved()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Eintrag konnte nicht gespeichert werden')
       setBusy(false)
@@ -913,30 +979,46 @@ function EditEntryDialog({ entry, onClose, onSaved }: {
           <div><span>Eintrag bearbeiten</span><h2>{entry.food.name}</h2></div>
           <button type="button" className="icon-button" onClick={onClose}><X /></button>
         </div>
-        <div className="selected-title edit-entry-food">
-          <div className="large-thumb">{entry.food.imageUrl ? <img src={entry.food.imageUrl} alt="" /> : entry.food.name[0]}</div>
-          <div><h3>{entry.food.name}</h3><p>{entry.food.brand || 'Eigenes Lebensmittel'}</p></div>
-        </div>
-        <div className="field-grid edit-entry-fields">
-          <label className="field"><span>Mahlzeit</span>
-            <select value={meal} onChange={event => setMeal(event.target.value as Meal)}>
-              {meals.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
-            </select>
-          </label>
-          <label className="field"><span>Menge in Gramm</span>
-            <input autoFocus type="number" min="0.1" max="10000" step="0.1"
-              value={amount} onChange={event => setAmount(Number(event.target.value))} />
-          </label>
-        </div>
-        <QuantityModifier amount={amount} unitAmount={unitAmount} onAmountChange={setAmount} />
-        <div className="edit-entry-preview">
-          {round(entry.food.calories * amount / 100)} kcal ·
-          {' '}P {round(entry.food.protein * amount / 100, 1)} g ·
-          {' '}K {round(entry.food.carbs * amount / 100, 1)} g ·
-          {' '}F {round(entry.food.fat * amount / 100, 1)} g
-        </div>
+        {entry.isCustom ? (
+          <>
+            <label className="field edit-entry-food"><span>Mahlzeit</span>
+              <select value={meal} onChange={event => setMeal(event.target.value as Meal)}>
+                {meals.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+              </select>
+            </label>
+            <CustomEntryFields custom={custom} setCustom={setCustom} setCustomValue={setCustomValue} autoFocus />
+            <div className="edit-entry-preview">
+              {round(custom.calories)} kcal · P {round(custom.protein, 1)} g · K {round(custom.carbs, 1)} g · F {round(custom.fat, 1)} g
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="selected-title edit-entry-food">
+              <div className="large-thumb">{entry.food.imageUrl ? <img src={entry.food.imageUrl} alt="" /> : entry.food.name[0]}</div>
+              <div><h3>{entry.food.name}</h3><p>{entry.food.brand || 'Eigenes Lebensmittel'}</p></div>
+            </div>
+            <div className="field-grid edit-entry-fields">
+              <label className="field"><span>Mahlzeit</span>
+                <select value={meal} onChange={event => setMeal(event.target.value as Meal)}>
+                  {meals.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                </select>
+              </label>
+              <label className="field"><span>Menge in Gramm</span>
+                <input autoFocus type="number" min="0.1" max="10000" step="0.1"
+                  value={amount} onChange={event => setAmount(Number(event.target.value))} />
+              </label>
+            </div>
+            <QuantityModifier amount={amount} unitAmount={unitAmount} onAmountChange={setAmount} />
+            <div className="edit-entry-preview">
+              {round(entry.food.calories * amount / 100)} kcal ·
+              {' '}P {round(entry.food.protein * amount / 100, 1)} g ·
+              {' '}K {round(entry.food.carbs * amount / 100, 1)} g ·
+              {' '}F {round(entry.food.fat * amount / 100, 1)} g
+            </div>
+          </>
+        )}
         {error && <div className="inline-error">{error}</div>}
-        <button className="primary-button full" disabled={busy || amount <= 0}>
+        <button className="primary-button full" disabled={busy || (entry.isCustom ? custom.name.trim() === '' : amount <= 0)}>
           {busy ? <LoaderCircle className="spin" /> : <PencilLine />} Änderungen speichern
         </button>
       </form>
@@ -974,6 +1056,7 @@ function AddDialog({ date, meal, onClose, onAdded }: {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [manual, setManual] = useState(false)
+  const [customEntry, setCustomEntry] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [editingServing, setEditingServing] = useState(false)
   const [servingDraft, setServingDraft] = useState(100)
@@ -1050,7 +1133,22 @@ function AddDialog({ date, meal, onClose, onAdded }: {
           <div><span>Eintrag hinzufügen</span><h2>{meals.find(item => item.id === meal)?.label}</h2></div>
           <button className="icon-button" onClick={onClose}><X /></button>
         </div>
-        {manual ? (
+        {customEntry ? (
+          <CustomEntryForm
+            onCancel={() => setCustomEntry(false)}
+            onSubmit={async entry => {
+              setBusy(true); setError('')
+              try {
+                await api.createCustomEntry(date, meal, entry)
+                await onAdded()
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Freier Eintrag konnte nicht gespeichert werden')
+                setBusy(false)
+              }
+            }}
+            busy={busy}
+          />
+        ) : manual ? (
           <ManualFood onCancel={() => setManual(false)} onCreated={food => { chooseFood(food); setManual(false) }} />
         ) : selected ? (
           <div className="selected-food">
@@ -1107,6 +1205,7 @@ function AddDialog({ date, meal, onClose, onAdded }: {
             <div className="action-row">
               <button onClick={() => setScanning(true)}><Barcode /> Kamera scannen</button>
               <button onClick={() => void lookupBarcode()} disabled={busy}><ScanLine /> Barcode abrufen</button>
+              <button onClick={() => setCustomEntry(true)}><Flame /> Freier Eintrag</button>
               <button onClick={() => setManual(true)}><CirclePlus /> Manuell anlegen</button>
             </div>
             {busy && <div className="loading-state small"><LoaderCircle className="spin" /> Produkt wird gesucht …</div>}
@@ -1126,6 +1225,53 @@ function AddDialog({ date, meal, onClose, onAdded }: {
         <footer className="attribution">Produktdaten von <a href="https://world.openfoodfacts.org" target="_blank">Open Food Facts</a> (ODbL)</footer>
       </div>
     </div>
+  )
+}
+
+function CustomEntryForm({ onCancel, onSubmit, busy }: {
+  onCancel: () => void
+  onSubmit: (entry: CustomEntryInput) => Promise<void>
+  busy: boolean
+}) {
+  const [custom, setCustom] = useState<CustomEntryInput>({
+    name: '',
+    calories: 0,
+    protein: 0,
+    carbs: 0,
+    fat: 0,
+    fiber: 0,
+    sugar: 0,
+    saturatedFat: 0,
+    salt: 0,
+    micros: Object.fromEntries(editableMicros.map(name => [name, 0])),
+  })
+  const setCustomValue = <K extends keyof Omit<CustomEntryInput, 'micros'>>(key: K, value: CustomEntryInput[K]) =>
+    setCustom(current => ({ ...current, [key]: value }))
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    await onSubmit({
+      ...custom,
+      name: custom.name.trim(),
+      micros: Object.fromEntries(Object.entries(custom.micros).filter(([, value]) => value > 0)),
+    })
+  }
+
+  return (
+    <form className="custom-entry-form" onSubmit={submit}>
+      <button type="button" className="back-link" onClick={onCancel}><ChevronLeft size={17} /> Zurück zur Suche</button>
+      <p className="form-hint">
+        Für Buffets, Restaurantessen oder alles, was du nicht als Lebensmittel speichern willst.
+        Die Werte gelten direkt für diesen einen Mahlzeiten-Eintrag.
+      </p>
+      <CustomEntryFields custom={custom} setCustom={setCustom} setCustomValue={setCustomValue} autoFocus />
+      <div className="edit-entry-preview">
+        {round(custom.calories)} kcal · P {round(custom.protein, 1)} g · K {round(custom.carbs, 1)} g · F {round(custom.fat, 1)} g
+      </div>
+      <button className="primary-button full" disabled={busy || custom.name.trim() === ''}>
+        {busy ? <LoaderCircle className="spin" /> : <Plus />} Freien Eintrag speichern
+      </button>
+    </form>
   )
 }
 
